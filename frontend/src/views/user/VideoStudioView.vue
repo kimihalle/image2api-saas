@@ -108,6 +108,7 @@ const totalPrice = computed(() => Number((price.value * form.count).toFixed(4)))
 const pendingCount = computed(() => turns.value.flatMap((turn) => turn.tasks).filter((task) => !isFinished(task.status)).length)
 
 let pollTimer: number | undefined
+let generationStream: EventSource | null = null
 
 function applyStoredTemplate() {
   try {
@@ -233,13 +234,37 @@ onMounted(async () => {
   form.model = publicModelID(models.value[0])
   applyCapabilities()
   applyStoredTemplate()
+  connectGenerationStream()
   if (pendingCount.value) schedulePoll(800)
 })
 
 onBeforeUnmount(() => {
   if (pollTimer) window.clearTimeout(pollTimer)
+  generationStream?.close()
   objectURLs.forEach((url) => URL.revokeObjectURL(url))
 })
+
+function connectGenerationStream() {
+  generationStream?.close()
+  generationStream = new EventSource('/admin/api/generation/events')
+  generationStream.addEventListener('generation', (event: MessageEvent) => {
+    try { applyStreamJob(JSON.parse(event.data)?.job) } catch { /* polling remains the fallback */ }
+  })
+  generationStream.onerror = () => {
+    if (pendingCount.value) schedulePoll(3000)
+  }
+}
+
+async function applyStreamJob(job: any) {
+  if (!job?.id || job.kind !== 'video') return
+  const task = turns.value.flatMap((turn) => turn.tasks).find((item) => item.id === String(job.id))
+  if (!task) return
+  task.status = String(job.status || task.status)
+  task.progress = Number(job.progress || 0)
+  task.error = job.error ? safeError(job.error?.message || job.error) : undefined
+  if (task.status === 'completed') await loadTaskVideo(task)
+  if (isFinished(task.status)) await auth.refreshUser()
+}
 
 async function loadHistory() {
   loadingHistory.value = true

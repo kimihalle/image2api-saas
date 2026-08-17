@@ -52,7 +52,7 @@ function startHeroRotation() {
 }
 async function refresh() {
   loading.value = true
-  const [showcaseResponse, modelResponse, statsResponse] = await Promise.all([api('/showcase'), api('/managed-models'), api('/stats')])
+  const [showcaseResponse, modelResponse, statsResponse] = await Promise.all([api('/showcase'), api('/models'), api('/stats')])
   if (showcaseResponse.ok) showcase.value = showcaseResponse.data?.data || showcaseResponse.data || showcase.value
   if (modelResponse.ok) models.value = modelResponse.data?.data || modelResponse.data || []
   if (statsResponse.ok) stats.value = statsResponse.data || {}

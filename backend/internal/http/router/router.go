@@ -32,6 +32,8 @@ type Handlers struct {
 	Credits       *handler.CreditHandler
 	Sanbao        *handler.SanbaoHandler
 	Prompts       *handler.PromptHandler
+	Operations    *handler.OperationsHandler
+	APIPlatform   *service.APIPlatformService
 }
 
 func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.Engine {
@@ -44,10 +46,11 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 	engine.Use(middleware.RequestID())
 	engine.Use(middleware.AccessLog())
 	engine.Use(middleware.RequestBodyLimit(50 << 20))
+	engine.Use(middleware.APIUsage(handlers.APIPlatform))
 	engine.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.CORSOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Authorization", "Content-Type", "X-Request-Id"},
+		AllowHeaders:     []string{"Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key"},
 		AllowCredentials: true,
 	}))
 
@@ -68,10 +71,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 	{
 		publicAdmin.GET("/site", handlers.Site.Public)
 		publicAdmin.GET("/showcase", handlers.Showcase.List)
-		publicAdmin.GET("/managed-models", handlers.AdminRead.Models)
 		publicAdmin.GET("/stats", handlers.AdminRead.Stats)
-		publicAdmin.GET("/video-presets", handlers.UserGen.VideoPresets)
-		publicAdmin.GET("/catalog", handlers.UserGen.Catalog)
 		publicAdmin.GET("/models", handlers.UserGen.Models)
 		publicAdmin.GET("/deai-pricing", handlers.AppSettings.DeAIGet)
 		publicAdmin.GET("/prompt-categories", handlers.Prompts.PublicCategories)
@@ -99,6 +99,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		userAuthed.POST("/generate", handlers.UserGen.Generate)
 		userAuthed.POST("/generation/jobs", handlers.UserGen.SubmitJobs)
 		userAuthed.GET("/generation/jobs", handlers.UserGen.ActiveJobs)
+		userAuthed.GET("/generation/events", handlers.UserGen.GenerationEvents)
 		userAuthed.GET("/generation/jobs/:id", handlers.UserGen.Job)
 		userAuthed.DELETE("/generation/jobs/:id", handlers.UserGen.CancelJob)
 		userAuthed.DELETE("/generation/history/:id", handlers.UserGen.DeleteImageHistory)
@@ -122,12 +123,37 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		userAuthed.PUT("/prompts/:id/favorite", handlers.Prompts.Favorite)
 		userAuthed.POST("/prompts/:id/use", handlers.Prompts.Use)
 		userAuthed.POST("/pay/orders/:id/continue", handlers.Payment.ContinueOrder)
+		userAuthed.GET("/api-platform/usage", handlers.Operations.MyAPIUsage)
+		userAuthed.GET("/webhooks", handlers.Operations.WebhookEndpoints)
+		userAuthed.POST("/webhooks", handlers.Operations.CreateWebhook)
+		userAuthed.PUT("/webhooks/:id", handlers.Operations.UpdateWebhook)
+		userAuthed.DELETE("/webhooks/:id", handlers.Operations.DeleteWebhook)
+		userAuthed.POST("/webhooks/:id/test", handlers.Operations.TestWebhook)
+		userAuthed.GET("/webhook-deliveries", handlers.Operations.WebhookDeliveries)
+		userAuthed.GET("/workflows", handlers.Operations.Workflows)
+		userAuthed.POST("/workflows", handlers.Operations.CreateWorkflow)
+		userAuthed.PUT("/workflows/:id", handlers.Operations.UpdateWorkflow)
+		userAuthed.DELETE("/workflows/:id", handlers.Operations.DeleteWorkflow)
+		userAuthed.POST("/workflows/:id/render", handlers.Operations.RenderWorkflow)
 	}
 
 	authed := engine.Group("/admin/api")
 	authed.Use(middleware.RequireAdminSession(auth, cfg))
 	{
+		authed.GET("/managed-models", handlers.AdminRead.Models)
+		authed.GET("/catalog", handlers.UserGen.Catalog)
+		authed.GET("/video-presets", handlers.UserGen.VideoPresets)
 		authed.GET("/dashboard", handlers.AdminRead.Dashboard)
+		authed.GET("/generation/dead-letter", handlers.UserGen.DeadJobs)
+		authed.POST("/generation/dead-letter/:id/retry", handlers.UserGen.RetryDeadJob)
+		authed.GET("/operations", handlers.Operations.Snapshot)
+		authed.GET("/operations/settings", handlers.Operations.ReliabilitySettings)
+		authed.PUT("/operations/settings", handlers.Operations.SaveReliabilitySettings)
+		authed.POST("/operations/alerts/:id/resolve", handlers.Operations.ResolveAlert)
+		authed.POST("/operations/reconcile", handlers.Operations.RunReconciliation)
+		authed.GET("/operations/reconciliations/:id/issues", handlers.Operations.ReconciliationIssues)
+		authed.POST("/operations/backup", handlers.Operations.RunBackup)
+		authed.GET("/api-analytics", handlers.Operations.AdminAPIUsage)
 		authed.GET("/users", handlers.AdminRead.Users)
 		authed.GET("/invites", handlers.AdminRead.Invites)
 		authed.POST("/users", handlers.AdminWrite.CreateUser)

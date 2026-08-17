@@ -33,6 +33,7 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 type App struct {
@@ -58,7 +59,14 @@ func NewApp(ctx context.Context) (*App, error) {
 	// TranslateError: 把驱动层错误(如 Postgres 23505 唯一冲突)翻译成 gorm.ErrDuplicatedKey,
 	// 否则各 import-*（krea/adobe/leonardo/runway）里的 errors.Is(err, gorm.ErrDuplicatedKey)
 	// 兜底命不中,重复导入会直接抛原始错误 → 400,而不是按预期 Update 已有行。
-	db, err := gorm.Open(postgres.Open(cfg.PostgresDSN), &gorm.Config{TranslateError: true})
+	dbLog := gormlogger.New(log.New(os.Stdout, "db ", log.LstdFlags), gormlogger.Config{
+		SlowThreshold:             time.Second,
+		LogLevel:                  gormlogger.Warn,
+		IgnoreRecordNotFoundError: true,
+		ParameterizedQueries:      true,
+		Colorful:                  false,
+	})
+	db, err := gorm.Open(postgres.Open(cfg.PostgresDSN), &gorm.Config{TranslateError: true, Logger: dbLog})
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
@@ -120,6 +128,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	modelRepo := repo.NewModelRepository(db)
 	eventRepo := repo.NewEventRepository(db)
 	creditRepo := repo.NewCreditRepository(db)
+	operationsRepo := repo.NewOperationsRepository(db)
 	cdkRepo := repo.NewCDKRepository(db)
 	apiKeyRepo := repo.NewAPIKeyRepository(db)
 	tokenRepo := repo.NewTokenRepository(db)
@@ -130,6 +139,9 @@ func NewApp(ctx context.Context) (*App, error) {
 		log.Printf("ensure default concurrency group: %v", err)
 	}
 	concSvc := service.NewConcurrencyService(rdb)
+	generationEventsSvc := service.NewGenerationEventService(rdb)
+	apiPlatformSvc := service.NewAPIPlatformService(operationsRepo)
+	operationsSvc := service.NewOperationsService(operationsRepo, creditRepo, siteRepo)
 	cgroupSvc := service.NewConcurrencyGroupService(cgroupRepo, concSvc)
 	announcementSvc := service.NewAnnouncementService(siteRepo, userRepo)
 	orderRepo := repo.NewOrderRepository(db)
@@ -139,6 +151,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	smtpSvc := service.NewSMTPService()
 	rateLimitSvc := service.NewRateLimitService(rdb)
 	rustfsClient := storage.New(cfg.RustFSEndpoint, cfg.RustFSBucket, cfg.RustFSAccessKey, cfg.RustFSSecretKey)
+	backupSvc := service.NewBackupService(cfg, operationsRepo, siteRepo, rustfsClient)
 	authSvc := service.NewAuthService(userRepo, siteRepo, sessionSvc, emailCodeSvc, smtpSvc, cgroupRepo, cfg.AppEnv == "development")
 	appSettingsSvc := service.NewAppSettingsService(siteRepo, eventRepo, smtpSvc, rustfsClient)
 	imageAccessSvc := service.NewImageAccessService(cfg.GeneratedRoot, showcaseRepo, siteRepo, authSvc)
@@ -159,6 +172,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	v1Svc := service.NewV1Service(cfg, modelRepo, userRepo, eventRepo, tokenRepo, siteRepo, cgroupRepo, concSvc, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, customClient, rustfsClient)
 	v1Svc.SetCredits(creditRepo)
 	v1Svc.SetSanbao(sanbaoClient)
+	v1Svc.SetReliabilityPlatform(generationEventsSvc, apiPlatformSvc)
 	v1Svc.ResumeSanbaoJobs(context.Background())
 	sanbaoSvc := service.NewSanbaoAdminService(sanbaoClient, tokenRepo, modelRepo, eventRepo)
 	siteSvc := service.NewSiteService(siteRepo, cfg.AppTitle)
@@ -177,12 +191,13 @@ func NewApp(ctx context.Context) (*App, error) {
 	v1Svc.SetBannedWords(bannedWordRepo)
 	userGenSvc := service.NewUserGenerationService(v1Svc, eventRepo, userRepo, modelRepo)
 	generationJobRepo := repo.NewGenerationJobRepository(db)
-	generationQueueSvc := service.NewGenerationQueueService(generationJobRepo, userRepo, modelRepo, userGenSvc)
+	generationQueueSvc := service.NewGenerationQueueService(generationJobRepo, userRepo, modelRepo, userGenSvc, generationEventsSvc, apiPlatformSvc)
+	operationsHandler := handler.NewOperationsHandler(operationsSvc, backupSvc, apiPlatformSvc)
 
 	engine := router.New(cfg, authSvc, router.Handlers{
 		Health:        handler.NewHealthHandler(sqlDB, rdb, rustfsClient),
 		Images:        handler.NewImageHandler(cfg, imageAccessSvc, rustfsClient),
-		V1:            handler.NewV1Handler(v1Svc),
+		V1:            handler.NewV1Handler(v1Svc, apiPlatformSvc),
 		Site:          handler.NewSiteHandler(siteSvc),
 		Showcase:      handler.NewShowcaseHandler(showcaseSvc),
 		Auth:          handler.NewAuthHandler(cfg, authSvc, rateLimitSvc),
@@ -192,7 +207,7 @@ func NewApp(ctx context.Context) (*App, error) {
 		AdminWrite:    handler.NewAdminWriteHandler(adminWriteSvc),
 		CDK:           handler.NewCDKHandler(cdkSvc),
 		UserTools:     handler.NewUserToolsHandler(apiKeySvc, cdkSvc),
-		UserGen:       handler.NewUserGenerationHandler(userGenSvc, generationQueueSvc, adminReadSvc),
+		UserGen:       handler.NewUserGenerationHandler(userGenSvc, generationQueueSvc, generationEventsSvc, adminReadSvc),
 		ProviderAdmin: handler.NewProviderAdminHandler(tokenSvc, refreshSvc),
 		ConcGroups:    handler.NewConcurrencyGroupHandler(cgroupSvc),
 		Announcement:  handler.NewAnnouncementHandler(announcementSvc),
@@ -201,6 +216,8 @@ func NewApp(ctx context.Context) (*App, error) {
 		Credits:       handler.NewCreditHandler(creditRepo),
 		Sanbao:        handler.NewSanbaoHandler(sanbaoSvc, v1Svc),
 		Prompts:       handler.NewPromptHandler(promptSvc),
+		Operations:    operationsHandler,
+		APIPlatform:   apiPlatformSvc,
 	})
 
 	// Background self-healing sweep (quota recovery, cookie refresh, stale-pending
@@ -209,6 +226,9 @@ func NewApp(ctx context.Context) (*App, error) {
 	loopCtx, loopCancel := context.WithCancel(context.Background())
 	go maintenanceSvc.Run(loopCtx)
 	go generationQueueSvc.Run(loopCtx, cfg.GenerationWorkers)
+	go operationsSvc.Run(loopCtx)
+	go backupSvc.Run(loopCtx)
+	go apiPlatformSvc.Run(loopCtx)
 
 	return &App{
 		Config:            cfg,

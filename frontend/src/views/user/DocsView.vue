@@ -177,6 +177,7 @@ onMounted(loadModels)
         <a-anchor-link href="#edits" title="图像编辑" />
         <a-anchor-link href="#videos" title="视频生成" />
         <a-anchor-link href="#responses" title="响应结构" />
+        <a-anchor-link href="#reliability" title="幂等与 Webhook" />
         <a-anchor-link href="#errors" title="错误与重试" />
       </a-anchor>
     </aside>
@@ -238,9 +239,17 @@ onMounted(loadModels)
 }</code></pre></div></div>
       </section>
 
+      <section id="reliability">
+        <h3>幂等请求与 Webhook</h3>
+        <p>所有生成 POST 接口支持 <code>Idempotency-Key</code>。同一用户、同一 Key、同一请求体只执行一次；Key 相同但参数不同会返回 409，避免网络重试造成重复生成和重复扣费。建议使用业务订单号或 UUID，并为每次新创作生成新 Key。</p>
+        <pre class="light-code"><code>Idempotency-Key: your-unique-request-id</code></pre>
+        <p>在“开放平台”中可订阅生成成功、生成失败、死信和退款事件。系统使用 HMAC-SHA256 对 <code>时间戳 + "." + 原始请求体</code> 签名，失败投递会指数退避，最多尝试 8 次。</p>
+        <div class="error-table"><div><code>X-Webhook-Id</code><span>本次投递的唯一 ID，可用于接收方去重</span></div><div><code>X-Webhook-Timestamp</code><span>签名使用的 Unix 时间戳</span></div><div><code>X-Webhook-Signature</code><span>使用创建时显示的 whsec_ 密钥计算的十六进制 HMAC-SHA256</span></div></div>
+      </section>
+
       <section id="errors">
         <h3>错误处理与计费</h3>
-        <p>提交生成任务时会预留额度，只有生成和媒体处理成功后才确认扣费；失败、超时或取消会自动退回。POST 请求在未收到明确响应时不要盲目自动重试，建议先查询生成记录，避免创建重复任务。</p>
+        <p>提交生成任务时会预留额度，只有生成和媒体处理成功后才确认扣费；失败、超时或取消会自动退回。POST 请求在未收到明确响应时应携带原来的 <code>Idempotency-Key</code> 重试，不要更换 Key。</p>
         <div class="error-table"><div><code>400</code><span>参数错误、提示词不合规或能力超出模型限制</span></div><div><code>401</code><span>API Key 无效，或上游额度暂不可用</span></div><div><code>402</code><span>账户可用额度不足</span></div><div><code>404</code><span>模型、任务或内容不存在</span></div><div><code>409</code><span>视频仍在生成，内容暂不可下载</span></div><div><code>413</code><span>参考文件超过允许大小</span></div><div><code>429</code><span>账户并发任务达到上限</span></div><div><code>502 / 503</code><span>生成服务暂时不可用，稍后再试</span></div></div>
       </section>
     </article>

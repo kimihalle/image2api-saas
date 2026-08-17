@@ -191,17 +191,24 @@ func (s *V1Service) resumeSanbaoJob(parent context.Context, ev model.EventLog) {
 	acct, err := s.tokens.Get(ctx, "sanbao", ev.AccountID)
 	user, uerr := s.users.GetByID(ctx, ev.UserID)
 	principal := &APIPrincipal{User: user, TokenType: "resume", CreditTransactionID: ev.CreditTransactionID}
-	if err != nil || acct == nil || strings.TrimSpace(acct.Value) == "" || uerr != nil {
+	modelName := ev.Model
+	if modelItem, modelErr := s.models.Get(ctx, ev.Model); modelErr == nil {
+		modelName = modelItem.EffectiveName()
+	}
+	fail := func(message string) {
 		_ = s.refundIfNeeded(context.Background(), principal, ev.ID, ev.Cost)
-		_ = s.events.UpdateStatus(context.Background(), ev.ID, "failed", "任务恢复失败：原三宝账号或用户不存在", 0)
+		_ = s.events.UpdateStatus(context.Background(), ev.ID, "failed", message, 0)
+		s.notifyVideoTerminal(context.Background(), principal, modelName, ev.ID, ev.Ratio, ev.Resolution, ev.Duration, ev.Cost, "failed", message)
+	}
+	if err != nil || acct == nil || strings.TrimSpace(acct.Value) == "" || uerr != nil {
+		fail("任务恢复失败：原视频账号或用户不存在")
 		return
 	}
 	started := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
-			_ = s.refundIfNeeded(context.Background(), principal, ev.ID, ev.Cost)
-			_ = s.events.UpdateStatus(context.Background(), ev.ID, "failed", "任务恢复轮询超时", 0)
+			fail("任务恢复轮询超时")
 			return
 		case <-time.After(4 * time.Second):
 		}
@@ -210,16 +217,14 @@ func (s *V1Service) resumeSanbaoJob(parent context.Context, ev model.EventLog) {
 			if errors.Is(pollErr, sanbao.ErrTemporaryUpstream) {
 				continue
 			}
-			_ = s.refundIfNeeded(context.Background(), principal, ev.ID, ev.Cost)
-			_ = s.events.UpdateStatus(context.Background(), ev.ID, "failed", pollErr.Error(), 0)
+			fail(pollErr.Error())
 			return
 		}
 		next := time.Now().Add(4 * time.Second)
 		_ = s.events.UpdateAsyncVideo(context.Background(), ev.ID, task.ID, max(0, task.Progress), task.Cost, nil, &next)
 		switch strings.ToLower(task.Status) {
 		case "failed", "error", "cancelled":
-			_ = s.refundIfNeeded(context.Background(), principal, ev.ID, ev.Cost)
-			_ = s.events.UpdateStatus(context.Background(), ev.ID, "failed", fmt.Sprintf("sanbao generation failed: %v", task.Error), 0)
+			fail(fmt.Sprintf("视频生成失败: %v", task.Error))
 			return
 		case "succeeded", "success", "completed":
 			u := strings.TrimSpace(task.DownloadURL)
@@ -228,14 +233,12 @@ func (s *V1Service) resumeSanbaoJob(parent context.Context, ev model.EventLog) {
 			}
 			b, _, downloadErr := s.sanbao.Download(ctx, u)
 			if downloadErr != nil {
-				_ = s.refundIfNeeded(context.Background(), principal, ev.ID, ev.Cost)
-				_ = s.events.UpdateStatus(context.Background(), ev.ID, "failed", "视频转存失败: "+downloadErr.Error(), 0)
+				fail("视频转存失败: " + downloadErr.Error())
 				return
 			}
 			_, key := s.allocateOutput(principal, "mp4", "")
 			if putErr := s.store.Put(ctx, key, b, "video/mp4"); putErr != nil {
-				_ = s.refundIfNeeded(context.Background(), principal, ev.ID, ev.Cost)
-				_ = s.events.UpdateStatus(context.Background(), ev.ID, "failed", "视频转存失败: "+putErr.Error(), 0)
+				fail("视频转存失败: " + putErr.Error())
 				return
 			}
 			_ = s.events.MarkVideoReady(context.Background(), ev.ID, key, int(time.Since(started).Milliseconds()))
@@ -244,6 +247,7 @@ func (s *V1Service) resumeSanbaoJob(parent context.Context, ev model.EventLog) {
 			}
 			_ = s.models.IncrementGenerationCount(context.Background(), ev.Model)
 			_ = s.users.IncrementGenerationCount(context.Background(), ev.UserID)
+			s.notifyVideoTerminal(context.Background(), principal, modelName, ev.ID, ev.Ratio, ev.Resolution, ev.Duration, ev.Cost, "completed", "")
 			return
 		}
 	}

@@ -147,3 +147,48 @@ func TestGenerationQueueConcurrentSubmissionsRespectUserLimit(t *testing.T) {
 		t.Fatalf("active jobs = (%d, %v), want %d", active, err, limit)
 	}
 }
+
+func TestGenerationQueueRetryDeadLetterAndManualRecovery(t *testing.T) {
+	db := openGenerationQueueIntegrationDB(t)
+	ctx := context.Background()
+	repository := NewGenerationJobRepository(db)
+	now := time.Now()
+	id := fmt.Sprintf("qretry-%d", now.UnixNano())
+	job := &model.GenerationJob{
+		ID: id, UserID: id, Kind: "image", Status: "queued", Stage: "queued",
+		Payload: []byte(`{}`), MaxAttempts: 2, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := repository.CreateBatch(ctx, []*model.GenerationJob{job}); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	t.Cleanup(func() { db.Delete(&model.GenerationJob{}, "id = ?", id) })
+
+	claimed, err := repository.ClaimNext(ctx, "worker-retry")
+	if err != nil || claimed == nil || claimed.ID != id || claimed.Attempts != 1 {
+		t.Fatalf("first claim = (%#v, %v)", claimed, err)
+	}
+	if err := repository.Retry(ctx, id, "provider_busy", "temporary", time.Now()); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	claimed, err = repository.ClaimNext(ctx, "worker-retry")
+	if err != nil || claimed == nil || claimed.ID != id || claimed.Attempts != 2 {
+		t.Fatalf("second claim = (%#v, %v)", claimed, err)
+	}
+	if err := repository.DeadLetter(ctx, id, "provider_busy", "exhausted"); err != nil {
+		t.Fatalf("dead letter: %v", err)
+	}
+	dead, total, err := repository.ListDead(ctx, 20, 0)
+	if err != nil || total < 1 || len(dead) < 1 {
+		t.Fatalf("list dead = (%d, %d, %v)", len(dead), total, err)
+	}
+	if ok, err := repository.RetryDead(ctx, id); err != nil || !ok {
+		t.Fatalf("manual recovery = (%v, %v)", ok, err)
+	}
+	var recovered model.GenerationJob
+	if err := db.First(&recovered, "id = ?", id).Error; err != nil {
+		t.Fatalf("reload recovered: %v", err)
+	}
+	if recovered.Status != "queued" || recovered.Attempts != 0 || recovered.DeadAt != nil {
+		t.Fatalf("unexpected recovered state: %#v", recovered)
+	}
+}

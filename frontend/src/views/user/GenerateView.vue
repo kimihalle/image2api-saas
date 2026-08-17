@@ -52,6 +52,7 @@ let pollTimer: ReturnType<typeof setTimeout> | undefined
 let polling = false
 let destroyed = false
 let batchFinalized = true
+let generationStream: EventSource | null = null
 
 function publicModelID(model: any) {
   return String(model?.alias || model?.id || '').trim()
@@ -203,10 +204,12 @@ onMounted(async () => {
     schedulePoll(250)
   }
   if (mode.value === 'chat') snapConversationToBottom()
+  connectGenerationStream()
 })
 onBeforeUnmount(() => {
   destroyed = true
   if (pollTimer) clearTimeout(pollTimer)
+  generationStream?.close()
 })
 watch(selected, (model) => {
   if (!model) return
@@ -224,9 +227,11 @@ function outputUrl(item?: OutputItem | null) {
 function mapQueueJob(job: any, index: number, current?: OutputItem): OutputItem {
   const statusMap: Record<string, OutputStatus> = {
     queued: 'queued',
+    retry_wait: 'queued',
     processing: 'running',
     completed: 'success',
     failed: 'failed',
+    dead_letter: 'failed',
     cancelled: 'failed',
   }
   return {
@@ -236,6 +241,37 @@ function mapQueueJob(job: any, index: number, current?: OutputItem): OutputItem 
     data: job.result || current?.data,
     error: job.error || (job.status === 'cancelled' ? '任务已取消，未扣除额度' : current?.error),
     position: Number(job.position || 0),
+  }
+}
+
+function isActiveTask(item: OutputItem) {
+  return item.status === 'queued' || item.status === 'running'
+}
+
+function applyStreamJob(job: any) {
+  if (!job?.id) return
+  const index = outputs.value.findIndex((candidate) => candidate.id === String(job.id))
+  if (index < 0) return
+  replaceTask(mapQueueJob(job, index, outputs.value[index]))
+  const active = outputs.value.some(isActiveTask)
+  loading.value = active
+  if (!active) finishBatch()
+}
+
+function connectGenerationStream() {
+  generationStream?.close()
+  generationStream = new EventSource('/admin/api/generation/events')
+  generationStream.addEventListener('snapshot', (event: MessageEvent) => {
+    try {
+      const payload = JSON.parse(event.data)
+      for (const job of payload.jobs || []) applyStreamJob(job)
+    } catch { /* polling remains the fallback */ }
+  })
+  generationStream.addEventListener('generation', (event: MessageEvent) => {
+    try { applyStreamJob(JSON.parse(event.data)?.job) } catch { /* polling remains the fallback */ }
+  })
+  generationStream.onerror = () => {
+    if (outputs.value.some(isActiveTask)) schedulePoll(3000)
   }
 }
 
@@ -256,7 +292,7 @@ function schedulePoll(delay = 1600) {
 
 async function pollJobs() {
   if (destroyed || polling) return
-  const active = outputs.value.filter((item) => item.status === 'queued' || item.status === 'running')
+  const active = outputs.value.filter(isActiveTask)
   if (!active.length) {
     await finishBatch()
     return
@@ -272,7 +308,7 @@ async function pollJobs() {
   } finally {
     polling = false
   }
-  const stillActive = outputs.value.some((item) => item.status === 'queued' || item.status === 'running')
+  const stillActive = outputs.value.some(isActiveTask)
   loading.value = stillActive
   if (stillActive) schedulePoll()
   else await finishBatch()

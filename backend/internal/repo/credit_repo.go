@@ -115,6 +115,46 @@ func (r *CreditRepository) Refund(ctx context.Context, id string) (*model.User, 
 	return &updated, true, nil
 }
 
+// RefundCapturedMismatch is reserved for the reconciliation service. It repairs
+// the impossible state "generation failed but its reservation was captured".
+// The row lock and captured-only guard keep repeated reconciliation runs
+// idempotent; normal request paths must continue using Refund.
+func (r *CreditRepository) RefundCapturedMismatch(ctx context.Context, id string) (*model.User, bool, error) {
+	if id == "" {
+		return nil, false, nil
+	}
+	var updated model.User
+	refunded := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item model.CreditTransaction
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&item, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if item.Status != "captured" {
+			return nil
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&updated, "id = ?", item.UserID).Error; err != nil {
+			return err
+		}
+		now := time.Now()
+		updated.Credits += item.Amount
+		if err := tx.Model(&model.User{}).Where("id = ?", updated.ID).Updates(map[string]any{
+			"credits": updated.Credits, "updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.CreditTransaction{}).Where("id = ? AND status = ?", id, "captured").Updates(map[string]any{
+			"status": "refunded", "refunded_at": &now, "balance_after": updated.Credits,
+			"reason": gorm.Expr("reason || ?", " [automatic reconciliation]"), "updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		refunded = true
+		return nil
+	})
+	return &updated, refunded, err
+}
+
 func (r *CreditRepository) GetByEvent(ctx context.Context, eventID string) (*model.CreditTransaction, error) {
 	var item model.CreditTransaction
 	if err := r.db.WithContext(ctx).First(&item, "event_id = ?", eventID).Error; err != nil {

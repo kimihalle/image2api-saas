@@ -18,6 +18,8 @@ const preview = ref<any>(null)
 const stats = ref<any>({ total: 0, success: 0, failed: 0 })
 const todayStats = ref<any>({ total: 0, success: 0, failed: 0 })
 let pollTimer: number | undefined
+let streamReloadTimer: number | undefined
+let generationStream: EventSource | null = null
 let requestSerial = 0
 const providers = computed(() => [...new Set(rows.value.map((x) => x.provider).filter(Boolean))])
 const filtered = computed(() => rows.value.filter((x) =>
@@ -52,7 +54,7 @@ async function copyPrompt(row: any) {
   Message.success('提示词已复制')
 }
 function isPending(row: any) {
-  return ['pending', 'queued', 'running', 'processing'].includes(String(row?.status || '').toLowerCase())
+  return ['pending', 'queued', 'retry_wait', 'running', 'processing'].includes(String(row?.status || '').toLowerCase())
 }
 function schedulePoll() {
   if (pollTimer) window.clearTimeout(pollTimer)
@@ -104,8 +106,21 @@ function exportCSV() {
   URL.revokeObjectURL(link.href)
 }
 
-onMounted(() => load())
-onUnmounted(() => { requestSerial += 1; if (pollTimer) window.clearTimeout(pollTimer) })
+function connectGenerationStream() {
+  generationStream = new EventSource('/admin/api/generation/events')
+  generationStream.addEventListener('generation', () => {
+    if (streamReloadTimer) window.clearTimeout(streamReloadTimer)
+    streamReloadTimer = window.setTimeout(() => load(true), 300)
+  })
+  generationStream.onerror = () => { /* EventSource reconnects and polling remains available. */ }
+}
+onMounted(() => { load(); connectGenerationStream() })
+onUnmounted(() => {
+  requestSerial += 1
+  generationStream?.close()
+  if (pollTimer) window.clearTimeout(pollTimer)
+  if (streamReloadTimer) window.clearTimeout(streamReloadTimer)
+})
 watch([kind, status, provider], () => {
   page.value = 1
   load()

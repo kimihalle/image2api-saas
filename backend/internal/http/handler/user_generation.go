@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,17 +16,89 @@ import (
 type UserGenerationHandler struct {
 	userGen *service.UserGenerationService
 	queue   *service.GenerationQueueService
+	events  *service.GenerationEventService
 	admin   *service.AdminReadService
 	idem    *idemStore
 }
 
-func NewUserGenerationHandler(userGen *service.UserGenerationService, queue *service.GenerationQueueService, admin *service.AdminReadService) *UserGenerationHandler {
+func NewUserGenerationHandler(userGen *service.UserGenerationService, queue *service.GenerationQueueService, events *service.GenerationEventService, admin *service.AdminReadService) *UserGenerationHandler {
 	return &UserGenerationHandler{
 		userGen: userGen,
 		queue:   queue,
+		events:  events,
 		admin:   admin,
 		idem:    &idemStore{m: map[string]*idemEntry{}},
 	}
+}
+
+// GenerationEvents streams durable queue state changes. Redis Pub/Sub carries
+// events across backend instances; the initial snapshot closes the small race
+// between opening the stream and a job changing state.
+func (h *UserGenerationHandler) GenerationEvents(c *gin.Context) {
+	user := currentUser(c)
+	if user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"detail": "未登录或会话已过期"})
+		return
+	}
+	if user.Role == "admin" {
+		h.streamGenerationEvents(c, "generation:admin", "")
+		return
+	}
+	h.streamGenerationEvents(c, "generation:user:"+user.ID, user.ID)
+}
+
+func (h *UserGenerationHandler) streamGenerationEvents(c *gin.Context, channel, userID string) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache, no-transform")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	if userID != "" {
+		if items, err := h.queue.ActiveOwned(c.Request.Context(), userID); err == nil {
+			data, _ := json.Marshal(map[string]any{"event": "snapshot", "jobs": items})
+			_, _ = fmt.Fprintf(c.Writer, "event: snapshot\ndata: %s\n\n", data)
+			c.Writer.Flush()
+		}
+	}
+	pubsub := h.events.Subscribe(c.Request.Context(), channel)
+	if pubsub == nil {
+		return
+	}
+	defer pubsub.Close()
+	messages := pubsub.Channel()
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-ping.C:
+			_, _ = fmt.Fprint(c.Writer, ": ping\n\n")
+			c.Writer.Flush()
+		case message, ok := <-messages:
+			if !ok {
+				return
+			}
+			_, _ = fmt.Fprintf(c.Writer, "event: generation\ndata: %s\n\n", message.Payload)
+			c.Writer.Flush()
+		}
+	}
+}
+
+func (h *UserGenerationHandler) DeadJobs(c *gin.Context) {
+	items, total, err := h.queue.DeadJobs(c.Request.Context(), parseInt(c.Query("limit"), 50), parseInt(c.Query("offset"), 0))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "读取死信任务失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "total": total})
+}
+
+func (h *UserGenerationHandler) RetryDeadJob(c *gin.Context) {
+	if err := h.queue.RetryDead(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // SubmitJobs persists an image batch and returns immediately. Provider calls
@@ -590,7 +664,7 @@ func (h *UserGenerationHandler) Models(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "model service unavailable"})
 		return
 	}
-	items, err := h.admin.ModelsView(c.Request.Context())
+	items, err := h.admin.PublicModelsView(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load models"})
 		return

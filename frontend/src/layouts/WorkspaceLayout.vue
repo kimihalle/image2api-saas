@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  IconApps, IconArchive, IconBook, IconCloud, IconCode, IconDashboard,
+  IconApps, IconArchive, IconBook, IconCloud, IconCode, IconDashboard, IconExperiment,
   IconCalendar, IconFile, IconGift, IconImage, IconLayers, IconMenu, IconNotification, IconPoweroff, IconQuestionCircle, IconSafe,
   IconSettings, IconStorage, IconStop, IconThunderbolt, IconUserGroup, IconVideoCamera, IconBulb,
 } from '@arco-design/web-vue/es/icon'
@@ -30,6 +30,7 @@ const userGroups = [
   ] },
   { label: '开发与用量', items: [
     { path: '/app/api-keys', label: 'API Keys', icon: IconCode },
+    { path: '/app/open-platform', label: '开放平台', icon: IconExperiment },
     { path: '/app/docs', label: '开发文档', icon: IconBook },
     { path: '/app/billing', label: '账单与额度', icon: IconSafe },
   ] },
@@ -42,6 +43,7 @@ const userGroups = [
 const adminGroups = [
   { label: '运营', items: [
     { path: '/admin/overview', label: '运营概览', icon: IconDashboard },
+    { path: '/admin/operations', label: '系统保障', icon: IconSafe },
     { path: '/admin/logs', label: '生成日志', icon: IconFile },
     { path: '/admin/works', label: '作品管理', icon: IconImage },
     { path: '/admin/users', label: '用户与权限', icon: IconUserGroup },

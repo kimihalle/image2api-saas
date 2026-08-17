@@ -115,6 +115,57 @@ func (s *AdminReadService) ModelsView(ctx context.Context) ([]map[string]any, er
 	return out, nil
 }
 
+// PublicModelsView is the canonical client-facing capability center. Provider,
+// upstream model and account-routing details never leave the operator API.
+func (s *AdminReadService) PublicModelsView(ctx context.Context) ([]map[string]any, error) {
+	items, err := s.models.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if !item.Enabled {
+			continue
+		}
+		ratios := repo.JSONStrings(item.Ratios)
+		resolutions := repo.JSONStrings(item.Resolutions)
+		durations := repo.JSONStrings(item.Durations)
+		if len(resolutions) == 0 {
+			for key := range item.Prices {
+				resolutions = append(resolutions, key)
+			}
+			sort.Strings(resolutions)
+		}
+		capabilities := map[string]any{
+			"schema_version":       1,
+			"media_type":           item.Type,
+			"ratios":               ratios,
+			"resolutions":          resolutions,
+			"durations":            durations,
+			"image_to_image":       item.ImageToImage,
+			"max_reference_images": item.MaxReferenceImages,
+			"reference_mode":       item.ReferenceMode,
+		}
+		for key, value := range item.Capabilities {
+			// Operator-configured capability extensions may add fields, while the
+			// canonical DB columns above remain authoritative for validation.
+			if _, exists := capabilities[key]; !exists {
+				capabilities[key] = value
+			}
+		}
+		out = append(out, map[string]any{
+			"id": item.ID, "alias": item.Alias, "type": item.Type, "name": item.Name,
+			"enabled": item.Enabled, "ratios": ratios, "resolutions": resolutions,
+			"prices": map[string]any(item.Prices), "duration_prices": map[string]any(item.DurationPrices),
+			"durations": durations, "image_to_image": item.ImageToImage,
+			"max_reference_images": item.MaxReferenceImages, "reference_mode": item.ReferenceMode,
+			"weight": item.Weight, "generation_count": item.GenerationCount,
+			"capabilities": capabilities,
+		})
+	}
+	return out, nil
+}
+
 func (s *AdminReadService) Logs(ctx context.Context, limit, offset int, kind, status string, statuses []string, since *time.Time, userID string, userIDs []string, query, excludeSource, source, provider string, hasFile, excludeShowcase, mediaOnly bool) ([]model.EventLog, int64, *repo.EventStats, error) {
 	var excludeFiles []string
 	if excludeShowcase {

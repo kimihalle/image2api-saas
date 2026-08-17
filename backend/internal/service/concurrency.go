@@ -24,7 +24,9 @@ type ConcurrencyService struct {
 }
 
 func NewConcurrencyService(rdb *redis.Client) *ConcurrencyService {
-	return &ConcurrencyService{redis: rdb, ttl: 900} // 15 min
+	// Video jobs have a 30-minute execution budget. Keep the lease beyond that
+	// ceiling so a slow render cannot silently fall out of concurrency control.
+	return &ConcurrencyService{redis: rdb, ttl: 2100} // 35 min
 }
 
 // acquireScript: KEYS[1]=set, ARGV[1]=max (0=unlimited), ARGV[2]=ttl secs,

@@ -18,15 +18,17 @@ import (
 const maxQueuedJobsPerUser = 20
 
 type GenerationQueueService struct {
-	jobs   *repo.GenerationJobRepository
-	users  *repo.UserRepository
-	models *repo.ModelRepository
-	gen    *UserGenerationService
-	wake   chan struct{}
+	jobs     *repo.GenerationJobRepository
+	users    *repo.UserRepository
+	models   *repo.ModelRepository
+	gen      *UserGenerationService
+	events   *GenerationEventService
+	platform *APIPlatformService
+	wake     chan struct{}
 }
 
-func NewGenerationQueueService(jobs *repo.GenerationJobRepository, users *repo.UserRepository, models *repo.ModelRepository, gen *UserGenerationService) *GenerationQueueService {
-	return &GenerationQueueService{jobs: jobs, users: users, models: models, gen: gen, wake: make(chan struct{}, 1)}
+func NewGenerationQueueService(jobs *repo.GenerationJobRepository, users *repo.UserRepository, models *repo.ModelRepository, gen *UserGenerationService, events *GenerationEventService, platform *APIPlatformService) *GenerationQueueService {
+	return &GenerationQueueService{jobs: jobs, users: users, models: models, gen: gen, events: events, platform: platform, wake: make(chan struct{}, 1)}
 }
 
 func (s *GenerationQueueService) SubmitImages(ctx context.Context, user *model.User, in UserGenerateRequest, count int) ([]map[string]any, error) {
@@ -99,6 +101,9 @@ func (s *GenerationQueueService) SubmitImages(ctx context.Context, user *model.U
 			UserID:        user.ID,
 			Kind:          "image",
 			Status:        "queued",
+			Stage:         "queued",
+			Progress:      0,
+			MaxAttempts:   3,
 			Payload:       append([]byte(nil), payload...),
 			EstimatedCost: price,
 			AvailableAt:   now,
@@ -115,7 +120,9 @@ func (s *GenerationQueueService) SubmitImages(ctx context.Context, user *model.U
 	s.signal()
 	out := make([]map[string]any, 0, len(rows))
 	for i, row := range rows {
-		out = append(out, shapeGenerationJob(row, int64(i+1)))
+		shaped := shapeGenerationJob(row, int64(i+1))
+		out = append(out, shaped)
+		s.events.Publish(ctx, user.ID, map[string]any{"event": "job.created", "job": shaped})
 	}
 	return out, nil
 }
@@ -136,7 +143,7 @@ func (s *GenerationQueueService) ActiveOwned(ctx context.Context, userID string)
 	out := make([]map[string]any, 0, len(items))
 	for i := range items {
 		position := int64(0)
-		if items[i].Status == "queued" {
+		if items[i].Status == "queued" || items[i].Status == "retry_wait" {
 			position = s.jobs.QueuePosition(ctx, &items[i])
 		}
 		out = append(out, shapeGenerationJob(&items[i], position))
@@ -151,6 +158,9 @@ func (s *GenerationQueueService) CancelOwned(ctx context.Context, userID, id str
 	}
 	if !ok {
 		return errors.New("任务已开始执行，当前不能取消")
+	}
+	if item, getErr := s.jobs.GetOwned(ctx, id, userID); getErr == nil {
+		s.events.Publish(ctx, userID, map[string]any{"event": "job.updated", "job": shapeGenerationJob(item, 0)})
 	}
 	return nil
 }
@@ -229,6 +239,7 @@ func (s *GenerationQueueService) Run(ctx context.Context, workers int) {
 			<-slots
 			return
 		case work <- item:
+			s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.updated", "job": shapeGenerationJob(item, 0)})
 		}
 	}
 }
@@ -236,33 +247,118 @@ func (s *GenerationQueueService) Run(ctx context.Context, workers int) {
 func (s *GenerationQueueService) process(ctx context.Context, item *model.GenerationJob) {
 	defer func() {
 		if value := recover(); value != nil {
-			_ = s.jobs.Fail(context.Background(), item.ID, "任务执行异常，请稍后重试")
+			s.handleFailure(context.Background(), item, "worker_panic", true, "任务执行异常，请稍后重试")
 			log.Printf("generation queue: panic job=%s value=%v", item.ID, value)
 		}
 	}()
 	user, err := s.users.GetByID(ctx, item.UserID)
 	if err != nil || user.Status != "active" {
-		_ = s.jobs.Fail(ctx, item.ID, "账号不可用，任务未扣费")
+		s.handleFailure(ctx, item, "user_unavailable", false, "账号不可用，任务未扣费")
 		return
 	}
 	var request UserGenerateRequest
 	if err := json.Unmarshal(item.Payload, &request); err != nil {
-		_ = s.jobs.Fail(ctx, item.ID, "任务参数损坏，任务未扣费")
+		s.handleFailure(ctx, item, "invalid_payload", false, "任务参数损坏，任务未扣费")
 		return
 	}
+	_ = s.jobs.SetProgress(ctx, item.ID, "submitting", 25)
+	item.Stage, item.Progress = "submitting", 25
+	s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.updated", "job": shapeGenerationJob(item, 0)})
 	result, err := s.gen.Generate(ctx, user, request)
 	if err != nil {
-		_ = s.jobs.Fail(ctx, item.ID, friendlyQueueError(err))
+		code, retryable, message := classifyQueueError(err)
+		s.handleFailure(ctx, item, code, retryable, message)
 		return
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		_ = s.jobs.Fail(ctx, item.ID, "生成完成但结果解析失败")
+		s.handleFailure(ctx, item, "result_encoding", false, "生成完成但结果解析失败")
 		return
 	}
 	if err := s.jobs.Complete(ctx, item.ID, encoded); err != nil {
 		log.Printf("generation queue: complete job=%s: %v", item.ID, err)
 	}
+	item.Status, item.Stage, item.Progress = "completed", "completed", 100
+	item.Result = encoded
+	now := time.Now()
+	item.FinishedAt = &now
+	s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.completed", "job": shapeGenerationJob(item, 0)})
+	if s.platform != nil {
+		s.platform.EmitWebhook(ctx, item.UserID, "generation.completed", item.ID, webhookJobPayload(item))
+	}
+}
+
+func (s *GenerationQueueService) handleFailure(ctx context.Context, item *model.GenerationJob, code string, retryable bool, message string) {
+	if retryable && item.Attempts < item.MaxAttempts {
+		delay := time.Duration(1<<max(0, item.Attempts-1)) * 5 * time.Second
+		available := time.Now().Add(delay)
+		_ = s.jobs.Retry(ctx, item.ID, code, message, available)
+		item.Status, item.Stage, item.Progress = "retry_wait", "retry_wait", 0
+		item.Error, item.LastError, item.ErrorCode, item.Retryable = message, message, code, true
+		item.AvailableAt = available
+		s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.retrying", "job": shapeGenerationJob(item, s.jobs.QueuePosition(ctx, item))})
+		s.signal()
+		return
+	}
+	if retryable {
+		_ = s.jobs.DeadLetter(ctx, item.ID, code, message)
+		item.Status, item.Stage, item.Progress = "dead_letter", "dead_letter", 100
+		item.Error, item.LastError, item.ErrorCode, item.Retryable = message, message, code, false
+		s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.dead_letter", "job": shapeGenerationJob(item, 0)})
+		if s.platform != nil {
+			s.platform.EmitWebhook(ctx, item.UserID, "generation.dead_letter", item.ID, webhookJobPayload(item))
+			s.platform.EmitWebhook(ctx, item.UserID, "billing.refunded", item.ID, webhookRefundPayload(item))
+		}
+		return
+	}
+	_ = s.jobs.Fail(ctx, item.ID, message)
+	item.Status, item.Stage, item.Progress = "failed", "failed", 100
+	item.Error, item.ErrorCode = message, code
+	s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.failed", "job": shapeGenerationJob(item, 0)})
+	if s.platform != nil {
+		s.platform.EmitWebhook(ctx, item.UserID, "generation.failed", item.ID, webhookJobPayload(item))
+		s.platform.EmitWebhook(ctx, item.UserID, "billing.refunded", item.ID, webhookRefundPayload(item))
+	}
+}
+
+func webhookJobPayload(item *model.GenerationJob) map[string]any {
+	return map[string]any{
+		"id": item.ID, "kind": item.Kind, "status": item.Status, "stage": item.Stage,
+		"error": emptyOrNil(item.Error), "error_code": emptyOrNil(item.ErrorCode),
+		"attempts": item.Attempts, "estimated_cost": item.EstimatedCost,
+		"created_at": item.CreatedAt, "finished_at": item.FinishedAt,
+	}
+}
+
+func webhookRefundPayload(item *model.GenerationJob) map[string]any {
+	return map[string]any{
+		"generation_id": item.ID, "amount": item.EstimatedCost,
+		"reason": emptyOrNil(item.Error), "created_at": time.Now(),
+	}
+}
+
+func (s *GenerationQueueService) DeadJobs(ctx context.Context, limit, offset int) ([]map[string]any, int64, error) {
+	items, total, err := s.jobs.ListDead(ctx, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]map[string]any, 0, len(items))
+	for i := range items {
+		out = append(out, shapeGenerationJob(&items[i], 0))
+	}
+	return out, total, nil
+}
+
+func (s *GenerationQueueService) RetryDead(ctx context.Context, id string) error {
+	ok, err := s.jobs.RetryDead(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("死信任务不存在或已被处理")
+	}
+	s.signal()
+	return nil
 }
 
 func (s *GenerationQueueService) signal() {
@@ -288,22 +384,26 @@ func shapeGenerationJob(item *model.GenerationJob, position int64) map[string]an
 	if len(item.Result) > 0 {
 		_ = json.Unmarshal(item.Result, &result)
 	}
-	progress := 0
-	switch item.Status {
-	case "processing":
-		progress = 10
-	case "completed", "failed", "cancelled":
+	progress := item.Progress
+	if item.Status == "completed" && progress < 100 {
 		progress = 100
 	}
 	return map[string]any{
 		"id":             item.ID,
 		"kind":           item.Kind,
 		"status":         item.Status,
+		"stage":          item.Stage,
 		"progress":       progress,
 		"position":       position,
 		"estimated_cost": item.EstimatedCost,
 		"result":         result,
 		"error":          emptyOrNil(item.Error),
+		"error_code":     emptyOrNil(item.ErrorCode),
+		"last_error":     emptyOrNil(item.LastError),
+		"retryable":      item.Retryable,
+		"attempts":       item.Attempts,
+		"max_attempts":   item.MaxAttempts,
+		"next_retry_at":  item.AvailableAt,
 		"created_at":     item.CreatedAt,
 		"started_at":     item.StartedAt,
 		"finished_at":    item.FinishedAt,
@@ -336,5 +436,29 @@ func friendlyQueueError(err error) string {
 			return "生成失败，已自动处理退款"
 		}
 		return message
+	}
+}
+
+func classifyQueueError(err error) (string, bool, string) {
+	message := friendlyQueueError(err)
+	switch {
+	case errors.Is(err, ErrConcurrencyFull), errors.Is(err, ErrProviderExecution):
+		return "provider_busy", true, message
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "upstream_timeout", true, "上游响应超时，系统将自动重试"
+	case errors.Is(err, ErrNoProviderAccount):
+		return "no_provider_account", true, message
+	case errors.Is(err, ErrInsufficientFunds):
+		return "insufficient_funds", false, message
+	case errors.Is(err, ErrUnknownModel), errors.Is(err, gorm.ErrRecordNotFound):
+		return "model_unavailable", false, message
+	case errors.Is(err, ErrBannedPrompt), errors.Is(err, ErrUnsupportedParams):
+		return "invalid_request", false, message
+	default:
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "timeout") || strings.Contains(lower, "temporar") || strings.Contains(lower, "overload") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "429") || strings.Contains(lower, "502") || strings.Contains(lower, "503") {
+			return "temporary_upstream", true, message
+		}
+		return "generation_failed", false, message
 	}
 }

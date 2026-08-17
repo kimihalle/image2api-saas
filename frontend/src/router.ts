@@ -9,6 +9,7 @@ const userChildren = [
   { path: 'video', component: () => import('./views/user/VideoStudioView.vue'), meta: { title: '视频创作' } },
   { path: 'history', component: () => import('./views/user/HistoryView.vue'), meta: { title: '生成记录' } },
   { path: 'api-keys', component: () => import('./views/user/APIKeysView.vue'), meta: { title: 'API Keys' } },
+  { path: 'open-platform', component: () => import('./views/user/OpenPlatformView.vue'), meta: { title: '开放平台' } },
   { path: 'billing', component: () => import('./views/user/BillingView.vue'), meta: { title: '账单与额度' } },
   { path: 'docs', component: () => import('./views/user/DocsView.vue'), meta: { title: '开发文档' } },
   { path: 'settings', component: () => import('./views/user/SettingsView.vue'), meta: { title: '账户设置' } },
@@ -18,6 +19,7 @@ const userChildren = [
 const adminChildren = [
   { path: '', redirect: '/admin/overview' },
   { path: 'overview', component: () => import('./views/admin/AdminOverviewView.vue'), meta: { title: '运营概览', admin: true } },
+  { path: 'operations', component: () => import('./views/admin/OperationsView.vue'), meta: { title: '系统保障', admin: true } },
   { path: 'models', component: () => import('./views/admin/ModelsView.vue'), meta: { title: '模型目录', admin: true } },
   { path: 'providers', component: () => import('./views/admin/ProvidersView.vue'), meta: { title: 'Provider 账号', admin: true } },
   { path: 'video-models', component: () => import('./views/admin/VideoModelsView.vue'), meta: { title: '视频模型', admin: true } },

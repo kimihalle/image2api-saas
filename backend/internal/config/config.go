@@ -23,6 +23,7 @@ type Config struct {
 	CORSOrigins            []string
 	PublicOrigin           string
 	GeneratedRoot          string
+	BackupRoot             string
 	RustFSEndpoint         string
 	RustFSBucket           string
 	RustFSAccessKey        string
@@ -61,6 +62,7 @@ func Load() (*Config, error) {
 			// images both live here and are served (cookie-authed) via /images.
 			filepath.Join(wd, "data", "generated"),
 		)),
+		BackupRoot:             filepath.Clean(envString("BACKUP_ROOT", filepath.Join(wd, "data", "backups"))),
 		RustFSEndpoint:         envString("RUSTFS_ENDPOINT", ""),
 		RustFSBucket:           envString("RUSTFS_BUCKET", ""),
 		RustFSAccessKey:        envString("RUSTFS_ACCESS_KEY", ""),

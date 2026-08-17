@@ -84,6 +84,8 @@ type V1Service struct {
 	custom   *custom.Client
 	sanbao   *sanbao.Client
 	store    *storage.Client
+	stream   *GenerationEventService
+	platform *APIPlatformService
 	// refresh re-mints an Adobe access token from its cookie when a request hits a
 	// 401 mid-flight (set via SetRefresh — wired after construction to avoid an
 	// init cycle). nil for deployments without cookie refresh.
@@ -187,6 +189,7 @@ func (r *InflightRegistry) Cancel(eventID string) bool {
 type APIPrincipal struct {
 	User                *model.User
 	TokenType           string
+	APIKeyID            string
 	CreditTransactionID string
 }
 
@@ -263,6 +266,13 @@ func NewV1Service(cfg *config.Config, models *repo.ModelRepository, users *repo.
 func (s *V1Service) SetCredits(r *repo.CreditRepository) { s.credits = r }
 
 func (s *V1Service) SetSanbao(client *sanbao.Client) { s.sanbao = client }
+
+// SetReliabilityPlatform connects async video jobs to the same cross-instance
+// SSE and Webhook infrastructure used by queued image generations.
+func (s *V1Service) SetReliabilityPlatform(stream *GenerationEventService, platform *APIPlatformService) {
+	s.stream = stream
+	s.platform = platform
+}
 
 // Inflight exposes the registry so the maintenance sweep can cancel a stuck
 // generation when it abandons that event.
@@ -410,10 +420,19 @@ func (s *V1Service) Authenticate(ctx context.Context, authHeader string) (*APIPr
 	if user.Status != "active" {
 		return nil, ErrInvalidAPIKey
 	}
-	_ = s.users.TouchAPIKeyUsage(ctx, HashAPIKey(token))
+	keyHash := HashAPIKey(token)
+	_ = s.users.TouchAPIKeyUsage(ctx, keyHash)
+	keyID := ""
+	for _, item := range user.APIKeys {
+		if item.KeyHash == keyHash {
+			keyID = item.ID
+			break
+		}
+	}
 	return &APIPrincipal{
 		User:      user,
 		TokenType: "user",
+		APIKeyID:  keyID,
 	}, nil
 }
 
@@ -432,7 +451,7 @@ func (s *V1Service) ListModels(ctx context.Context) ([]map[string]any, error) {
 			"id":                    item.EffectiveName(),
 			"object":                "model",
 			"created":               now,
-			"owned_by":              item.Provider,
+			"owned_by":              "platform",
 			"kind":                  item.Type,
 			"supported_ratios":      repo.JSONStrings(item.Ratios),
 			"supported_resolutions": repo.JSONStrings(item.Resolutions),
@@ -971,6 +990,20 @@ func (s *V1Service) StartSessionVideoJob(ctx context.Context, user *model.User, 
 
 func (s *V1Service) startVideoJob(ctx context.Context, principal *APIPrincipal, in V1VideoRequest, source string) (map[string]any, error) {
 	ctx = context.WithoutCancel(ctx)
+	slot := ""
+	if principal != nil && principal.User != nil {
+		slot = randomUpper(12)
+		if !s.userAcquire(ctx, principal.User, slot) {
+			s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, source, ErrUserConcurrencyFull.Error())
+			return nil, ErrUserConcurrencyFull
+		}
+	}
+	releaseSlot := true
+	defer func() {
+		if releaseSlot && slot != "" && principal != nil && principal.User != nil {
+			s.userRelease(ctx, principal.User.ID, slot)
+		}
+	}()
 	modelItem, resolution, aspectRatio, duration, price, err := s.prepareVideo(ctx, principal, in, true)
 	if err != nil {
 		s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, source, err.Error())
@@ -1003,15 +1036,28 @@ func (s *V1Service) startVideoJob(ctx context.Context, principal *APIPrincipal, 
 	if err != nil {
 		return nil, err
 	}
-	go s.runVideoJob(ctx, principal, in, modelItem, eventID, aspectRatio, resolution, duration, price)
-	return videoJobObject(eventID, modelItem.EffectiveName(), "queued", 0, duration, sizeFromRatioRes(aspectRatio, resolution), time.Now().Unix(), 0, ""), nil
+	go s.runVideoJob(ctx, principal, in, modelItem, eventID, aspectRatio, resolution, duration, price, slot)
+	releaseSlot = false
+	out := videoJobObject(eventID, modelItem.EffectiveName(), "queued", 0, duration, sizeFromRatioRes(aspectRatio, resolution), time.Now().Unix(), 0, "")
+	out["charged"] = price
+	out["kind"] = "video"
+	s.publishVideoJob(ctx, principal, "job.created", out)
+	return out, nil
 }
 
 // runVideoJob renders the clip in the background, capturing the upstream URL
 // (downloadResult=false → no bytes, no RustFS) and storing it on the event.
-func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in V1VideoRequest, modelItem *model.ModelConfig, eventID, aspectRatio, resolution, duration string, price float64) {
+func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in V1VideoRequest, modelItem *model.ModelConfig, eventID, aspectRatio, resolution, duration string, price float64, slot string) {
 	genCtx, cancel := context.WithTimeout(ctx, videoGenBudget)
 	defer cancel()
+	if slot != "" && principal != nil && principal.User != nil {
+		defer s.userRelease(ctx, principal.User.ID, slot)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.finishVideoFailure(ctx, principal, modelItem, eventID, aspectRatio, resolution, duration, price, "视频任务执行异常，已自动退款")
+		}
+	}()
 	s.inflight.Add(eventID, cancel)
 	defer s.inflight.Done(eventID)
 	startedAt := time.Now()
@@ -1032,23 +1078,21 @@ func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in
 	case "sanbao":
 		_, videoURL, execErr = s.generateSanbaoVideo(genCtx, principal, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration))
 	default:
-		_ = s.refundIfNeeded(ctx, principal, eventID, price)
-		_ = s.events.UpdateStatus(ctx, eventID, "failed", "provider not implemented", 0)
+		s.finishVideoFailure(ctx, principal, modelItem, eventID, aspectRatio, resolution, duration, price, "当前模型暂不可用")
 		return
 	}
 	if execErr != nil {
-		_ = s.refundIfNeeded(ctx, principal, eventID, price)
-		_ = s.events.UpdateStatus(ctx, eventID, "failed", execErr.Error(), 0)
+		s.finishVideoFailure(ctx, principal, modelItem, eventID, aspectRatio, resolution, duration, price, execErr.Error())
 		return
 	}
 	if strings.TrimSpace(videoURL) == "" {
-		_ = s.refundIfNeeded(ctx, principal, eventID, price)
-		_ = s.events.UpdateStatus(ctx, eventID, "failed", "upstream returned no video url", 0)
+		s.finishVideoFailure(ctx, principal, modelItem, eventID, aspectRatio, resolution, duration, price, "视频服务未返回可用文件")
 		return
 	}
 	// Sanbao returns the local RustFS object key; other providers currently keep
 	// their upstream URL. /content supports both forms.
 	if err := s.events.MarkVideoReady(ctx, eventID, videoURL, int(time.Since(startedAt).Milliseconds())); err != nil {
+		s.finishVideoFailure(ctx, principal, modelItem, eventID, aspectRatio, resolution, duration, price, "视频结果写入失败，已自动退款")
 		return
 	}
 	if s.credits != nil && principal != nil {
@@ -1061,6 +1105,51 @@ func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in
 		_ = s.users.IncrementGenerationCount(ctx, principal.User.ID)
 	}
 	_ = s.maybeGrantInviteReward(ctx, principal)
+	s.notifyVideoTerminal(ctx, principal, modelItem.EffectiveName(), eventID, aspectRatio, resolution, duration, price, "completed", "")
+}
+
+func (s *V1Service) finishVideoFailure(ctx context.Context, principal *APIPrincipal, modelItem *model.ModelConfig, eventID, ratio, resolution, duration string, price float64, message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "视频生成失败，已自动退款"
+	}
+	_ = s.refundIfNeeded(ctx, principal, eventID, price)
+	_ = s.events.UpdateStatus(ctx, eventID, "failed", message, 0)
+	modelName := "视频模型"
+	if modelItem != nil {
+		modelName = modelItem.EffectiveName()
+	}
+	s.notifyVideoTerminal(ctx, principal, modelName, eventID, ratio, resolution, duration, price, "failed", message)
+}
+
+func (s *V1Service) notifyVideoTerminal(ctx context.Context, principal *APIPrincipal, modelName, eventID, ratio, resolution, duration string, price float64, status, message string) {
+	progress := 100
+	job := videoJobObject(eventID, modelName, status, progress, duration, sizeFromRatioRes(ratio, resolution), time.Now().Unix(), time.Now().Unix(), message)
+	job["kind"] = "video"
+	job["charged"] = price
+	eventName := "job.completed"
+	webhookName := "generation.completed"
+	if status == "failed" {
+		eventName = "job.failed"
+		webhookName = "generation.failed"
+	}
+	s.publishVideoJob(ctx, principal, eventName, job)
+	if s.platform == nil || principal == nil || principal.User == nil {
+		return
+	}
+	s.platform.EmitWebhook(ctx, principal.User.ID, webhookName, eventID, job)
+	if status == "failed" {
+		s.platform.EmitWebhook(ctx, principal.User.ID, "billing.refunded", eventID, map[string]any{
+			"generation_id": eventID, "amount": price, "reason": message, "created_at": time.Now(),
+		})
+	}
+}
+
+func (s *V1Service) publishVideoJob(ctx context.Context, principal *APIPrincipal, eventName string, job map[string]any) {
+	if s.stream == nil || principal == nil || principal.User == nil {
+		return
+	}
+	s.stream.Publish(ctx, principal.User.ID, map[string]any{"event": eventName, "job": job})
 }
 
 // VideoJob returns the OpenAI video object for a job, scoped to the caller.
@@ -1279,28 +1368,23 @@ func videoJobObject(id, modelID, status string, progress int, seconds, size stri
 // sizeFromRatioRes reconstructs an OpenAI-style "WxH" label from our stored ratio
 // + resolution tier (best-effort; only for display in the job object).
 func sizeFromRatioRes(ratio, resolution string) string {
-	long := 720
+	short := 720
 	res := strings.ToUpper(resolution)
 	switch {
 	case strings.Contains(res, "1080") || strings.Contains(res, "2K"):
-		long = 1080
+		short = 1080
 	case strings.Contains(res, "4K") || strings.Contains(res, "2160"):
-		long = 2160
+		short = 2160
 	}
-	w, h := long, long
-	switch strings.TrimSpace(ratio) {
-	case "16:9":
-		w, h = long, long*9/16
-	case "9:16":
-		w, h = long*9/16, long
-	case "4:3":
-		w, h = long, long*3/4
-	case "3:4":
-		w, h = long*3/4, long
-	case "1:1":
-		w, h = long, long
-	default:
-		w, h = long, long*9/16
+	var rw, rh int
+	if _, err := fmt.Sscanf(strings.TrimSpace(ratio), "%d:%d", &rw, &rh); err != nil || rw < 1 || rh < 1 {
+		rw, rh = 16, 9
+	}
+	w, h := short, short
+	if rw >= rh {
+		w, h = short*rw/rh, short
+	} else {
+		w, h = short, short*rh/rw
 	}
 	return fmt.Sprintf("%dx%d", w, h)
 }
@@ -1885,12 +1969,19 @@ func (s *V1Service) tryAccount(ctx context.Context, eventID, pool string, token 
 		}
 	}
 	for {
+		started := time.Now()
 		data, err := attempt(token)
 		if err == nil {
+			latency := time.Since(started).Milliseconds()
 			_, _ = s.tokens.Update(ctx, pool, token.ID, map[string]any{
-				"last_used_at":  time.Now(),
-				"success_total": gorm.Expr("success_total + 1"),
-				"fails":         0,
+				"last_used_at":      time.Now(),
+				"success_total":     gorm.Expr("success_total + 1"),
+				"fails":             0,
+				"consecutive_fails": 0,
+				"cooldown_until":    nil,
+				"last_error_code":   "",
+				"health_score":      gorm.Expr("LEAST(100, health_score + 2)"),
+				"avg_latency_ms":    gorm.Expr("CASE WHEN avg_latency_ms = 0 THEN ? ELSE (avg_latency_ms * 4 + ?) / 5 END", latency, latency),
 			})
 			return data, nil, false, false
 		}
@@ -2234,7 +2325,8 @@ func (s *V1Service) generateRunwayVideo(ctx context.Context, eventID string, mod
 				_, _ = s.tokens.Update(ctx, "runway", token.ID, map[string]any{
 					"last_used_at":  time.Now(),
 					"success_total": gorm.Expr("success_total + 1"),
-					"fails":         0,
+					"fails":         0, "consecutive_fails": 0, "cooldown_until": nil,
+					"last_error_code": "", "health_score": gorm.Expr("LEAST(100, health_score + 2)"),
 				})
 				data = d
 				videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
@@ -2248,6 +2340,7 @@ func (s *V1Service) generateRunwayVideo(ctx context.Context, eventID string, mod
 				return false, true
 			case errors.Is(genErr, runway.ErrTemporaryUpstream):
 				// 上游临时错误 → 直接换下一个号。
+				s.markTokenFailure(ctx, "runway", token, "video", false, false)
 				return false, true
 			default:
 				// 参数级错误(如 prompt 未过审)→ 直接失败,不换号。
@@ -2302,7 +2395,7 @@ func (s *V1Service) customActive(ctx context.Context, modelID string) ([]model.T
 	}
 	var active []model.TokenAccount
 	for _, item := range items {
-		if customAccountServes(item, modelID) {
+		if customAccountServes(item, modelID) && (item.CooldownUntil == nil || !item.CooldownUntil.After(time.Now())) {
 			active = append(active, item)
 		}
 	}
@@ -2391,6 +2484,7 @@ func (s *V1Service) generateCustomImage(ctx context.Context, eventID string, mod
 			if genErr == nil {
 				_, _ = s.tokens.Update(ctx, "custom", token.ID, map[string]any{
 					"last_used_at": time.Now(), "success_total": gorm.Expr("success_total + 1"), "fails": 0,
+					"consecutive_fails": 0, "cooldown_until": nil, "last_error_code": "", "health_score": gorm.Expr("LEAST(100, health_score + 2)"),
 				})
 				data = d
 				imgURL = u
@@ -2405,6 +2499,7 @@ func (s *V1Service) generateCustomImage(ctx context.Context, eventID string, mod
 				s.markTokenFailure(ctx, "custom", token, "image", false, true)
 				return false, true
 			case errors.Is(genErr, custom.ErrTemporaryUpstream):
+				s.markTokenFailure(ctx, "custom", token, "image", false, false)
 				return false, true
 			default:
 				return false, false
@@ -2466,6 +2561,7 @@ func (s *V1Service) generateCustomVideo(ctx context.Context, eventID string, mod
 			if genErr == nil {
 				_, _ = s.tokens.Update(ctx, "custom", token.ID, map[string]any{
 					"last_used_at": time.Now(), "success_total": gorm.Expr("success_total + 1"), "fails": 0,
+					"consecutive_fails": 0, "cooldown_until": nil, "last_error_code": "", "health_score": gorm.Expr("LEAST(100, health_score + 2)"),
 				})
 				data = d
 				videoURL = url
@@ -2480,6 +2576,7 @@ func (s *V1Service) generateCustomVideo(ctx context.Context, eventID string, mod
 				s.markTokenFailure(ctx, "custom", token, "video", false, true)
 				return false, true
 			case errors.Is(genErr, custom.ErrTemporaryUpstream):
+				s.markTokenFailure(ctx, "custom", token, "video", false, false)
 				return false, true
 			default:
 				return false, false
@@ -2635,7 +2732,8 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
 					"last_used_at":  time.Now(),
 					"success_total": gorm.Expr("success_total + 1"),
-					"fails":         0,
+					"fails":         0, "consecutive_fails": 0, "cooldown_until": nil,
+					"last_error_code": "", "health_score": gorm.Expr("LEAST(100, health_score + 2)"),
 				})
 				// 本地额度各扣各的；图/视频都归零时账号直接判死。
 				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "video")
@@ -2650,6 +2748,7 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 				s.markTokenFailure(ctx, "grok", token, "video", true, false)
 				return false, true
 			case errors.Is(genErr, grok.ErrTemporaryUpstream):
+				s.markTokenFailure(ctx, "grok", token, "video", false, false)
 				return false, true
 			default:
 				return false, false
@@ -2729,7 +2828,8 @@ func (s *V1Service) generateGrokImage(ctx context.Context, eventID string, model
 				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
 					"last_used_at":  time.Now(),
 					"success_total": gorm.Expr("success_total + 1"),
-					"fails":         0,
+					"fails":         0, "consecutive_fails": 0, "cooldown_until": nil,
+					"last_error_code": "", "health_score": gorm.Expr("LEAST(100, health_score + 2)"),
 				})
 				// 本地额度各扣各的；图/视频都归零时账号直接判死。
 				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "image")
@@ -2744,6 +2844,7 @@ func (s *V1Service) generateGrokImage(ctx context.Context, eventID string, model
 				s.markTokenFailure(ctx, "grok", token, "image", true, false)
 				return false, true
 			case errors.Is(genErr, grok.ErrTemporaryUpstream):
+				s.markTokenFailure(ctx, "grok", token, "image", false, false)
 				return false, true
 			default:
 				return false, false
@@ -2843,7 +2944,8 @@ func (s *V1Service) generateRunwayImage(ctx context.Context, eventID string, mod
 				_, _ = s.tokens.Update(ctx, "runway", token.ID, map[string]any{
 					"last_used_at":  time.Now(),
 					"success_total": gorm.Expr("success_total + 1"),
-					"fails":         0,
+					"fails":         0, "consecutive_fails": 0, "cooldown_until": nil,
+					"last_error_code": "", "health_score": gorm.Expr("LEAST(100, health_score + 2)"),
 				})
 				data = d
 				artURL = strings.TrimSpace(stringValue(meta["image_url"]))
@@ -2857,6 +2959,7 @@ func (s *V1Service) generateRunwayImage(ctx context.Context, eventID string, mod
 				return false, true
 			case errors.Is(genErr, runway.ErrTemporaryUpstream):
 				// 上游临时错误 → 直接换下一个号。
+				s.markTokenFailure(ctx, "runway", token, "image", false, false)
 				return false, true
 			default:
 				// 参数级错误(如 prompt 未过审)→ 直接失败,不换号。
@@ -3795,10 +3898,29 @@ func principalCredits(principal *APIPrincipal) float64 {
 //   - other (non-auth/non-quota): NEITHER pool is auto-disabled — accounts stay
 //     active/green and fails is tracked only for rotation ordering.
 func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token model.TokenAccount, kind string, isAuth, isQuota bool) {
+	now := time.Now()
+	failures := token.ConsecutiveFails + 1
+	cooldown := 20 * time.Second
+	if failures >= 3 {
+		cooldown = 2 * time.Minute
+	}
+	if failures >= 6 {
+		cooldown = 10 * time.Minute
+	}
+	errorCode := "upstream"
+	if isAuth {
+		errorCode = "auth"
+	} else if isQuota {
+		errorCode = "quota"
+	}
 	patch := map[string]any{
-		"last_used_at": time.Now(),
-		"fail_total":   gorm.Expr("fail_total + 1"),
-		"fails":        gorm.Expr("fails + 1"),
+		"last_used_at":      now,
+		"fail_total":        gorm.Expr("fail_total + 1"),
+		"fails":             gorm.Expr("fails + 1"),
+		"consecutive_fails": gorm.Expr("consecutive_fails + 1"),
+		"health_score":      gorm.Expr("GREATEST(5, health_score - ?)", 6+failures*2),
+		"cooldown_until":    now.Add(cooldown),
+		"last_error_code":   errorCode,
 	}
 	switch {
 	case isQuota:
@@ -3832,11 +3954,13 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 // (a non-overload temporary Adobe failure that ops policy treats as account death).
 func (s *V1Service) markTokenDead(ctx context.Context, pool string, token model.TokenAccount, kind string) {
 	_, _ = s.tokens.Update(ctx, pool, token.ID, map[string]any{
-		"last_used_at": time.Now(),
-		"fail_total":   gorm.Expr("fail_total + 1"),
-		"fails":        gorm.Expr("fails + 1"),
-		"status":       "disabled",
-		"dead":         true,
+		"last_used_at":    time.Now(),
+		"fail_total":      gorm.Expr("fail_total + 1"),
+		"fails":           gorm.Expr("fails + 1"),
+		"status":          "disabled",
+		"dead":            true,
+		"health_score":    0,
+		"last_error_code": "fatal",
 	})
 }
 
@@ -3863,7 +3987,15 @@ func (s *V1Service) nextCursor(pool string) uint64 {
 func pinTestAccount(items, active []model.TokenAccount, accountID string) []model.TokenAccount {
 	id := strings.TrimSpace(accountID)
 	if id == "" {
-		return active
+		now := time.Now()
+		filtered := active[:0]
+		for _, item := range active {
+			if item.CooldownUntil != nil && item.CooldownUntil.After(now) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		return filtered
 	}
 	for _, item := range items {
 		if item.ID == id && strings.TrimSpace(item.Value) != "" {
@@ -3877,20 +4009,43 @@ func (s *V1Service) rotateRoundRobin(pool string, items []model.TokenAccount) {
 	if len(items) <= 1 {
 		return
 	}
-	// Weight = priority: higher-weight accounts come first, so the scheduler tries
-	// them before lower-weight ones (and only falls through when they're at their
-	// concurrency cap). Within the SAME weight all accounts are equal, so they're
-	// rotated by the pool cursor for even distribution.
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	loads := s.conc.CountMany(context.Background(), "conc:a:", ids)
+	score := func(item model.TokenAccount) float64 {
+		limit := accountConcurrency(item)
+		available := 1.0
+		if limit > 0 {
+			available = 1 - float64(loads[item.ID])/float64(limit)
+			if available < 0 {
+				available = 0
+			}
+		}
+		health := item.HealthScore
+		if health <= 0 && !item.Dead {
+			health = 100
+		}
+		latencyPenalty := float64(item.AvgLatencyMS) / 5000
+		return health + available*25 - float64(item.ConsecutiveFails*5) - latencyPenalty
+	}
+	// Explicit operator weight remains the primary policy boundary. Inside a
+	// weight tier, prefer healthy low-load accounts and rotate true ties.
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Weight != items[j].Weight {
 			return items[i].Weight > items[j].Weight
+		}
+		si, sj := score(items[i]), score(items[j])
+		if absFloat(si-sj) > 0.01 {
+			return si > sj
 		}
 		return items[i].ID < items[j].ID
 	})
 	start := int(s.nextCursor(pool))
 	for i := 0; i < len(items); {
 		j := i + 1
-		for j < len(items) && items[j].Weight == items[i].Weight {
+		for j < len(items) && items[j].Weight == items[i].Weight && absFloat(score(items[j])-score(items[i])) <= 0.01 {
 			j++
 		}
 		if g := j - i; g > 1 {
