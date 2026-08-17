@@ -11,6 +11,13 @@ const auth = useAuthStore()
 const site = useSiteStore()
 const orders = ref<any[]>([])
 const ledger = ref<any[]>([])
+const orderTotal = ref(0)
+const ledgerTotal = ref(0)
+const orderPage = ref(1)
+const ledgerPage = ref(1)
+const orderLoading = ref(false)
+const ledgerLoading = ref(false)
+const pageSize = 20
 const payConfig = ref<any>({ enabled: false, methods: [], min_amount: 0, points_ratio: 0 })
 const selectedPackage = ref('')
 const rechargeMode = ref<'package' | 'custom'>('package')
@@ -43,9 +50,11 @@ const bestPackageID = computed(() => {
 const selectedMethodName = computed(() => form.method === 'wxpay' ? '微信支付' : form.method === 'alipay' ? '支付宝' : form.method || '未选择')
 const countdownText = computed(() => `${String(Math.floor(remainingSeconds.value / 60)).padStart(2, '0')}:${String(remainingSeconds.value % 60).padStart(2, '0')}`)
 const purchaseURL = computed(() => String(site.contact.shop || '').trim())
+const orderPagination = computed(() => ({ current: orderPage.value, pageSize, total: orderTotal.value, showTotal: true }))
+const ledgerPagination = computed(() => ({ current: ledgerPage.value, pageSize, total: ledgerTotal.value, showTotal: true }))
 
 async function load() {
-  const [config, orderResponse, ledgerResponse] = await Promise.all([api('/pay/config'), api('/pay/orders'), api('/billing/ledger')])
+  const [config] = await Promise.all([api('/pay/config'), loadOrders(), loadLedger()])
   if (config.ok) {
     payConfig.value = config.data
     form.method = config.data?.methods?.[0] || ''
@@ -53,8 +62,42 @@ async function load() {
     selectedPackage.value = firstPackage?.id || ''
     if (firstPackage) form.amount = Number(firstPackage.amount || 0)
   }
-  if (orderResponse.ok) orders.value = orderResponse.data?.data || []
-  if (ledgerResponse.ok) ledger.value = ledgerResponse.data?.data || []
+}
+
+async function loadOrders() {
+  orderLoading.value = true
+  try {
+    const offset = (orderPage.value - 1) * pageSize
+    const response = await api(`/pay/orders?limit=${pageSize}&offset=${offset}`)
+    if (!response.ok) return
+    orders.value = response.data?.data || []
+    orderTotal.value = Number(response.data?.total || 0)
+  } finally {
+    orderLoading.value = false
+  }
+}
+
+async function loadLedger() {
+  ledgerLoading.value = true
+  try {
+    const offset = (ledgerPage.value - 1) * pageSize
+    const response = await api(`/billing/ledger?limit=${pageSize}&offset=${offset}`)
+    if (!response.ok) return
+    ledger.value = response.data?.data || []
+    ledgerTotal.value = Number(response.data?.total || 0)
+  } finally {
+    ledgerLoading.value = false
+  }
+}
+
+function changeOrderPage(value: number) {
+  orderPage.value = value
+  loadOrders()
+}
+
+function changeLedgerPage(value: number) {
+  ledgerPage.value = value
+  loadLedger()
 }
 
 function openRecharge() {
@@ -204,8 +247,8 @@ const ledgerColumns = [
     <section class="balance-strip"><div><span>当前可用额度</span><strong><IconThunderbolt />{{ Number(auth.user?.credits || 0).toLocaleString() }}</strong><small>生成任务提交时预留额度，成功确认扣费，失败自动退回</small></div><div class="balance-actions"><div class="balance-meta"><span><small>已确认扣费</small><strong>{{ captured }}</strong></span><span><small>失败已退款</small><strong>{{ refunded }}</strong></span></div></div></section>
     <section class="ledger-flow"><div><b>01</b><IconHistory /><span><strong>预留额度</strong><small>提交生成任务时</small></span></div><div><b>02</b><IconCheckCircle /><span><strong>确认扣费</strong><small>Provider 返回成功</small></span></div><div><b>03</b><IconGift /><span><strong>失败退款</strong><small>失败或超时自动处理</small></span></div></section>
     <a-tabs default-active-key="ledger">
-      <a-tab-pane key="ledger" title="额度流水"><a-table :columns="ledgerColumns" :data="ledger" :pagination="false" :scroll="{ x: 980 }"><template #empty><a-empty description="暂无额度流水" /></template><template #ledgerAmount="{ record }"><span :class="record.status === 'refunded' ? 'credit' : 'debit'">{{ record.status === 'refunded' ? '+' : '-' }}{{ Number(record.amount || 0).toLocaleString() }}</span></template><template #ledgerStatus="{ record }"><a-tag :color="record.status === 'captured' ? 'green' : record.status === 'refunded' ? 'orange' : 'gray'">{{ record.status === 'captured' ? '已确认扣费' : record.status === 'refunded' ? '已退款' : record.status === 'reserved' ? '预扣处理中' : '状态异常' }}</a-tag></template></a-table></a-tab-pane>
-      <a-tab-pane key="orders" title="充值订单"><a-table :columns="columns" :data="orders" :pagination="false" :scroll="{ x: 1030 }"><template #empty><a-empty description="暂无充值订单" /></template><template #amount="{ record }">¥ {{ Number(record.amount).toFixed(2) }}</template><template #status="{ record }"><a-tag :color="record.status === 'paid' ? 'green' : record.status === 'failed' ? 'red' : 'orange'">{{ record.status === 'paid' ? '已支付' : record.status === 'failed' ? '失败' : ['expired', 'cancelled'].includes(record.status) ? '已过期' : '待支付' }}</a-tag></template><template #created="{ record }">{{ formatTime(record.created_at) }}</template><template #orderActions="{ record }"><a-button v-if="record.status !== 'paid'" type="text" size="mini" :loading="busy" @click="continueOrder(record)"><IconRefresh />继续支付</a-button><span v-else class="muted">已到账</span></template></a-table></a-tab-pane>
+      <a-tab-pane key="ledger" title="额度流水"><a-table :columns="ledgerColumns" :data="ledger" :loading="ledgerLoading" :pagination="ledgerPagination" :scroll="{ x: 980 }" row-key="id" @page-change="changeLedgerPage"><template #empty><a-empty description="暂无额度流水" /></template><template #ledgerAmount="{ record }"><span :class="record.status === 'refunded' ? 'credit' : 'debit'">{{ record.status === 'refunded' ? '+' : '-' }}{{ Number(record.amount || 0).toLocaleString() }}</span></template><template #ledgerStatus="{ record }"><a-tag :color="record.status === 'captured' ? 'green' : record.status === 'refunded' ? 'orange' : 'gray'">{{ record.status === 'captured' ? '已确认扣费' : record.status === 'refunded' ? '已退款' : record.status === 'reserved' ? '预扣处理中' : '状态异常' }}</a-tag></template></a-table></a-tab-pane>
+      <a-tab-pane key="orders" title="充值订单"><a-table :columns="columns" :data="orders" :loading="orderLoading" :pagination="orderPagination" :scroll="{ x: 1030 }" row-key="id" @page-change="changeOrderPage"><template #empty><a-empty description="暂无充值订单" /></template><template #amount="{ record }">¥ {{ Number(record.amount).toFixed(2) }}</template><template #status="{ record }"><a-tag :color="record.status === 'paid' ? 'green' : record.status === 'failed' ? 'red' : 'orange'">{{ record.status === 'paid' ? '已支付' : record.status === 'failed' ? '失败' : ['expired', 'cancelled'].includes(record.status) ? '已过期' : '待支付' }}</a-tag></template><template #created="{ record }">{{ formatTime(record.created_at) }}</template><template #orderActions="{ record }"><a-button v-if="record.status !== 'paid'" type="text" size="mini" :loading="busy" @click="continueOrder(record)"><IconRefresh />继续支付</a-button><span v-else class="muted">已到账</span></template></a-table></a-tab-pane>
     </a-tabs>
 
   <a-modal v-model:visible="redeemOpen" title="兑换码充值" modal-class="user-dialog">
