@@ -350,6 +350,10 @@ func (s *PaymentService) ListAll(ctx context.Context, status, source, query stri
 	return s.orders.List(ctx, status, source, query, userIDs, limit, offset)
 }
 
+func (s *PaymentService) Stats(ctx context.Context) (repo.OrderStats, error) {
+	return s.orders.Stats(ctx)
+}
+
 // RecordCreditOrder persists a synthetic already-paid order for a credit grant
 // that didn't go through epay — admin manual adjustments (source="admin") and
 // CDK redemptions (source="cdk") — so 订单管理 lists them alongside recharges.

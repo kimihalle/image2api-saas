@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import {
   IconCloudDownload, IconDelete, IconEdit, IconEye, IconPlus, IconSearch,
@@ -37,7 +37,6 @@ const emptyTemplate = () => ({
 })
 const form = reactive(emptyTemplate())
 const categoryForm = reactive({ name: '', description: '', icon: 'Sparkles', cover: '', weight: 0, enabled: true })
-const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
 function split(value: string) { return [...new Set(String(value || '').split(/[,，\n]/).map((item) => item.trim()).filter(Boolean))] }
 function list(value: unknown) { return Array.isArray(value) ? value.map(String) : [] }
@@ -181,7 +180,7 @@ const columns: any[] = [
         <template #updated="{ record }"><span class="muted">{{ formatTime(record.updated_at) }}</span></template>
         <template #actions="{ record }"><div class="action-row"><a-tooltip :content="record.status === 'published' ? '停用' : '上架'"><a-button type="text" :status="record.status === 'published' ? 'warning' : 'success'" :aria-label="record.status === 'published' ? '停用' : '上架'" @click="quickStatus(record)"><IconEye /></a-button></a-tooltip><a-tooltip content="编辑"><a-button type="text" aria-label="编辑" @click="openTemplate(record)"><IconEdit /></a-button></a-tooltip><a-tooltip content="删除"><a-button type="text" status="danger" aria-label="删除" @click="deleteTemplate(record)"><IconDelete /></a-button></a-tooltip></div></template>
       </a-table>
-      <nav v-if="pages > 1" class="pagination"><button v-for="item in pages" :key="item" :class="{ active: item === page }" @click="page = item; loadTemplates()">{{ item }}</button></nav>
+      <a-pagination v-if="total > pageSize" v-model:current="page" :total="total" :page-size="pageSize" show-total @change="loadTemplates" />
     </section>
 
     <section v-else-if="tab === 'categories'" class="category-table">

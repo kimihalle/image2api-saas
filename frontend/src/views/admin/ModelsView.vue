@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import {
   IconDelete, IconEdit, IconImage, IconPlayCircle, IconPlus, IconSearch,
@@ -24,10 +24,15 @@ const priceRows = ref<PriceRow[]>([])
 const durationRows = ref<PriceRow[]>([])
 const testingModel = ref<any>(null)
 const form = reactive({ alias: '', weight: 0, enabled: true, free_allowed: false })
+const managedPage = ref(1)
+const catalogPage = ref(1)
+const pageSize = 20
 
 const providers = computed(() => [...new Set([...rows.value, ...catalog.value].map((item) => item.provider).filter(Boolean))])
 const filteredRows = computed(() => rows.value.filter(matchesFilter))
 const filteredCatalog = computed(() => catalog.value.filter(matchesFilter))
+const pagedCatalog = computed(() => filteredCatalog.value.slice((catalogPage.value - 1) * pageSize, catalogPage.value * pageSize))
+const managedPagination = computed(() => ({ current: managedPage.value, pageSize, total: filteredRows.value.length, showTotal: true }))
 const isVideo = computed(() => selectedEntry.value?.type === 'video')
 
 function matchesFilter(item: any) {
@@ -61,6 +66,8 @@ async function load() {
   const [managedResponse, catalogResponse] = await Promise.all([api('/managed-models'), api('/catalog')])
   rows.value = managedResponse.ok ? (managedResponse.data?.data || managedResponse.data || []) : []
   catalog.value = catalogResponse.ok ? (catalogResponse.data?.data || catalogResponse.data || []) : []
+  managedPage.value = Math.min(managedPage.value, Math.max(1, Math.ceil(filteredRows.value.length / pageSize)))
+  catalogPage.value = Math.min(catalogPage.value, Math.max(1, Math.ceil(filteredCatalog.value.length / pageSize)))
   loading.value = false
 }
 
@@ -166,6 +173,7 @@ function priceText(item: any) {
   return [base, duration].filter(Boolean).join(' + ') || '未配置'
 }
 
+watch([query, provider], () => { managedPage.value = 1; catalogPage.value = 1 })
 onMounted(load)
 
 const columns: any[] = [
@@ -184,7 +192,7 @@ const columns: any[] = [
     <div class="toolbar"><a-input v-model="query" placeholder="搜索模型名称或 ID" allow-clear><template #prefix><IconSearch /></template></a-input><a-select v-model="provider"><a-option value="all">全部 Provider</a-option><a-option v-for="item in providers" :key="item" :value="item">{{ item }}</a-option></a-select><span>{{ activeTab === 'managed' ? filteredRows.length : filteredCatalog.length }} 个模型</span></div>
     <a-tabs v-model:active-key="activeTab" class="model-tabs">
       <a-tab-pane key="managed" title="已上线模型">
-        <a-table :columns="columns" :data="filteredRows" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 1200 }">
+        <a-table :columns="columns" :data="filteredRows" :loading="loading" :pagination="managedPagination" row-key="id" :scroll="{ x: 1200 }" @page-change="managedPage = $event">
           <template #empty><a-empty description="尚未上线模型，请从内置模型库添加" /></template>
           <template #model="{ record }"><div class="model-cell"><span :class="record.type"><IconVideoCamera v-if="record.type === 'video'" /><IconImage v-else /></span><div><strong>{{ record.alias || record.name || record.id }}</strong><code>{{ record.id }}</code></div></div></template>
           <template #capability="{ record }"><span class="capability">{{ capabilityText(record) }}</span></template>
@@ -194,7 +202,9 @@ const columns: any[] = [
         </a-table>
       </a-tab-pane>
       <a-tab-pane key="catalog" title="内置模型库">
-        <div class="catalog-list"><article v-for="item in filteredCatalog" :key="item.id" class="catalog-row"><span class="catalog-icon" :class="item.type"><IconVideoCamera v-if="item.type === 'video'" /><IconImage v-else /></span><div class="catalog-main"><div><strong>{{ item.description || item.id }}</strong><code>{{ item.id }}</code></div><p>{{ capabilityText(item) }}</p></div><div class="catalog-provider"><span>{{ item.provider }}</span><small>{{ item.type === 'video' ? '视频生成' : item.image_to_image ? '文生图 / 图生图' : '图像生成' }}</small></div><a-tag v-if="item.added" color="green">已上线</a-tag><a-button v-else type="outline" @click="openEditor(item)"><IconSettings />配置上线</a-button></article></div>
+        <div class="catalog-list"><article v-for="item in pagedCatalog" :key="item.id" class="catalog-row"><span class="catalog-icon" :class="item.type"><IconVideoCamera v-if="item.type === 'video'" /><IconImage v-else /></span><div class="catalog-main"><div><strong>{{ item.description || item.id }}</strong><code>{{ item.id }}</code></div><p>{{ capabilityText(item) }}</p></div><div class="catalog-provider"><span>{{ item.provider }}</span><small>{{ item.type === 'video' ? '视频生成' : item.image_to_image ? '文生图 / 图生图' : '图像生成' }}</small></div><a-tag v-if="item.added" color="green">已上线</a-tag><a-button v-else type="outline" @click="openEditor(item)"><IconSettings />配置上线</a-button></article></div>
+        <a-empty v-if="!loading && !filteredCatalog.length" description="没有符合条件的内置模型" />
+        <a-pagination v-if="filteredCatalog.length > pageSize" v-model:current="catalogPage" :total="filteredCatalog.length" :page-size="pageSize" show-total />
       </a-tab-pane>
     </a-tabs>
 

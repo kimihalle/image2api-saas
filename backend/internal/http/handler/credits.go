@@ -36,5 +36,10 @@ func (h *CreditHandler) Admin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load credit ledger"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": items, "total": total})
+	stats, err := h.credits.Stats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load credit stats"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "total": total, "stats": stats})
 }

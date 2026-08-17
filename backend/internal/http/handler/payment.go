@@ -140,6 +140,11 @@ func (h *PaymentHandler) AdminOrders(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load orders"})
 		return
 	}
+	stats, err := h.pay.Stats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load order stats"})
+		return
+	}
 	names := h.pay.UserNames(c.Request.Context())
 	out := make([]gin.H, 0, len(orders))
 	for i := range orders {
@@ -147,7 +152,7 @@ func (h *PaymentHandler) AdminOrders(c *gin.Context) {
 		row["user_name"] = names[orders[i].UserID]
 		out = append(out, row)
 	}
-	c.JSON(http.StatusOK, gin.H{"data": out, "total": total})
+	c.JSON(http.StatusOK, gin.H{"data": out, "total": total, "stats": stats})
 }
 
 func (h *PaymentHandler) SettingsGet(c *gin.Context) {

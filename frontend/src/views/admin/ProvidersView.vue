@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import { IconDelete, IconPlayCircle, IconPlus, IconRefresh } from '@arco-design/web-vue/es/icon'
 import GenerationTestModal from '../../components/GenerationTestModal.vue'
@@ -14,6 +14,8 @@ const selectedKeys = ref<string[]>([])
 const testingAccount = ref<any>(null)
 const stats = ref<any>({ total: 0, dead_total: 0 })
 const importResult = ref('')
+const page = ref(1)
+const pageSize = 20
 const form = reactive({ provider: 'chatgpt', name: '', value: '', weight: 0 })
 const endpoints: Record<string, string> = { chatgpt: 'import-chatgpt-token', adobe: 'import-adobe-cookie', runway: 'import-runway-token', leonardo: 'import-leonardo-cookie', krea: 'import-krea-cookie', imagine: 'import-imagine-token', grok: 'import-grok-token' }
 let pollTimer: number | undefined
@@ -21,6 +23,7 @@ let pollAttempts = 0
 
 const filtered = computed(() => active.value === 'all' ? rows.value : rows.value.filter((item) => active.value === 'dead' ? (item.dead || item.status === 'dead' || item.status === 'disabled') : item.status === active.value))
 const deadCount = computed(() => Number(stats.value.dead_total || rows.value.filter((item) => item.dead || item.status === 'dead').length))
+const pagination = computed(() => ({ current: page.value, pageSize, total: filtered.value.length, showTotal: true }))
 
 async function load() {
   loading.value = true
@@ -28,6 +31,7 @@ async function load() {
   rows.value = response.ok ? (response.data?.data || []) : []
   stats.value = response.data?.stats || { total: rows.value.length, dead_total: 0 }
   selectedKeys.value = selectedKeys.value.filter((id) => rows.value.some((item) => item.id === id))
+  page.value = Math.min(page.value, Math.max(1, Math.ceil(filtered.value.length / pageSize)))
   loading.value = false
   schedulePendingPoll()
 }
@@ -119,6 +123,7 @@ function statusColor(row: any) {
 }
 
 onMounted(load)
+watch(active, () => { page.value = 1 })
 onBeforeUnmount(() => { if (pollTimer) window.clearTimeout(pollTimer) })
 const columns: any[] = [{ title: '账号', slotName: 'account', width: 290 }, { title: 'Provider', dataIndex: 'pool', width: 105 }, { title: '状态', slotName: 'status', width: 105 }, { title: '可用积分', slotName: 'quota', width: 190 }, { title: '成功任务', dataIndex: 'success_total', width: 100 }, { title: '失败', dataIndex: 'fails', width: 80 }, { title: '权重', dataIndex: 'weight', width: 80 }, { title: '操作', slotName: 'action', width: 128, fixed: 'right' }]
 </script>
@@ -128,7 +133,7 @@ const columns: any[] = [{ title: '账号', slotName: 'account', width: 290 }, { 
     <div class="section-heading"><div><h2>Provider 账号</h2><p>批量维护上游凭证、账号资料、积分、权重与调用健康度。</p></div><a-space><a-button :loading="loading" @click="syncAll"><IconRefresh />同步账号与额度</a-button><a-button type="primary" @click="importOpen = true"><IconPlus />批量导入</a-button></a-space></div>
     <div class="provider-summary"><button v-for="item in [{ k: 'all', n: '全部账号', v: rows.length }, { k: 'active', n: '可调度', v: rows.filter(row => row.status === 'active' && !row.dead).length }, { k: 'quota', n: '额度不足', v: rows.filter(row => row.status === 'quota').length }, { k: 'dead', n: '凭证失效', v: deadCount }]" :key="item.k" :class="{ active: active === item.k }" @click="active = item.k"><span>{{ item.n }}</span><strong>{{ item.v }}</strong></button></div>
     <div class="batch-bar"><span>已选择 {{ selectedKeys.length }} 个账号</span><div><a-button v-if="selectedKeys.length" status="danger" @click="deleteSelected"><IconDelete />删除选中</a-button><a-button :disabled="!deadCount" @click="deleteDead"><IconDelete />清理失效账号<span v-if="deadCount">（{{ deadCount }}）</span></a-button></div></div>
-    <a-table v-model:selected-keys="selectedKeys" :row-selection="{ type: 'checkbox', showCheckedAll: true }" row-key="id" :columns="columns" :data="filtered" :loading="loading" :pagination="false" :scroll="{ x: 1130 }">
+    <a-table v-model:selected-keys="selectedKeys" :row-selection="{ type: 'checkbox', showCheckedAll: true }" row-key="id" :columns="columns" :data="filtered" :loading="loading" :pagination="pagination" :scroll="{ x: 1130 }" @page-change="page = $event">
       <template #account="{ record }"><div class="account"><span>{{ record.pool?.slice(0, 1).toUpperCase() }}</span><div><strong>{{ record.account_display_name || record.display_name || record.account_email || record.email || '资料识别中' }}</strong><small v-if="record.account_email || record.email">{{ record.account_email || record.email }}</small><small>{{ record.id }}</small></div></div></template>
       <template #status="{ record }"><a-tag :color="statusColor(record)">{{ statusLabel(record) }}</a-tag></template>
       <template #quota="{ record }"><div v-if="record.pool === 'grok'" class="quota-value"><strong>图 {{ record.image_remaining ?? '-' }} · 视频 {{ record.video_remaining ?? '-' }}</strong></div><div v-else-if="hasNumber(record.remaining)" class="quota-value"><strong>{{ Number(record.remaining).toLocaleString() }} 积分</strong><a-progress v-if="hasNumber(record.total) && Number(record.total) > 0" :percent="quotaPercent(record)" :show-text="false" size="small" color="#65735d" /><small v-if="hasNumber(record.total)">总额 {{ Number(record.total).toLocaleString() }}</small><small v-else>已完成额度同步</small></div><div v-else-if="record.pending || record.status === 'pending'" class="quota-value pending"><strong>正在识别</strong><small>后台校验凭证与账号资料</small></div><div v-else class="quota-value unknown" :title="record.quota_error || '上游未返回额度数据'"><strong>暂不可查</strong><small>{{ record.pool === 'adobe' ? '请配置可用代理后同步' : '上游未返回额度' }}</small></div></template>

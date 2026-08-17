@@ -36,7 +36,7 @@ onMounted(load)
 </script>
 <template><div class="admin-page"><div class="section-heading"><div><h2>视频模型</h2><p>同步三宝模型能力，配置前台名称、价格、排序与发布状态。</p></div><a-button type="primary" :loading="syncing" @click="sync"><IconThunderbolt/>同步三宝模型</a-button></div>
 <div class="notice"><IconVideoCamera/><div><strong>能力与售价分离</strong><p>比例、时长和素材上限来自三宝；前台售价由本系统独立管理。新同步模型默认不发布。</p></div></div>
-<div class="model-table"><a-table :data="rows" :loading="loading" row-key="id" :pagination="{pageSize:15}" :scroll="{x:1050}"><template #columns>
+<div class="model-table"><a-table :data="rows" :loading="loading" row-key="id" :pagination="{ pageSize: 15, showTotal: true }" :scroll="{x:1050}"><template #columns>
 <a-table-column title="模型" :width="250"><template #cell="{record}"><div class="model-id"><span><IconVideoCamera/></span><div><strong>{{ record.alias||record.name }}</strong><small>{{ record.upstream_model }}</small></div></div></template></a-table-column>
 <a-table-column title="动态能力" :width="230"><template #cell="{record}"><div class="cap"><strong>{{ caps(record) }}</strong><small>最多 {{ record.capabilities?.max_images||0 }} 图 · {{ record.capabilities?.max_videos||0 }} 视频 · {{ record.capabilities?.max_audios||0 }} 音频</small></div></template></a-table-column>
 <a-table-column title="售价 / 参考成本" :width="270"><template #cell="{record}"><div class="price"><strong>售价 {{ saleSummary(record) }}</strong><small :title="upstreamSummary(record)">成本 {{ upstreamSummary(record) }}</small></div></template></a-table-column>

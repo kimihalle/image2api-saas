@@ -201,7 +201,7 @@ onMounted(() => Promise.all([loadWords(), loadHits()]))
             <template #empty><div class="empty"><IconSafe /><span>当前没有匹配的违禁词</span></div></template>
           </a-table>
         </div>
-        <a-pagination v-if="wordTotal > pageSize" v-model:current="wordPage" :total="wordTotal" :page-size="pageSize" simple class="pagination" @change="loadWords()" />
+        <a-pagination v-if="wordTotal > pageSize" v-model:current="wordPage" :total="wordTotal" :page-size="pageSize" show-total @change="loadWords()" />
       </a-tab-pane>
 
       <a-tab-pane key="hits" title="触发记录">
@@ -218,7 +218,7 @@ onMounted(() => Promise.all([loadWords(), loadHits()]))
             <template #empty><div class="empty"><IconExclamationCircle /><span>暂无触发记录</span></div></template>
           </a-table>
         </div>
-        <a-pagination v-if="hitTotal > pageSize" v-model:current="hitPage" :total="hitTotal" :page-size="pageSize" simple class="pagination" @change="loadHits()" />
+        <a-pagination v-if="hitTotal > pageSize" v-model:current="hitPage" :total="hitTotal" :page-size="pageSize" show-total @change="loadHits()" />
       </a-tab-pane>
     </a-tabs>
 

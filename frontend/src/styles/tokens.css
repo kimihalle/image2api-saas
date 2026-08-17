@@ -168,6 +168,38 @@ body .arco-pagination-item-next { width: auto; min-width: 44px; padding: 0 8px; 
 body .arco-pagination-item-previous::after,
 body .arco-pagination-item-next::after { font-size: 11px; line-height: 1; content: '上页'; }
 body .arco-pagination-item-next::after { content: '下页'; }
+.admin-shell .content .arco-pagination {
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 16px !important;
+  padding-top: 0;
+}
+.admin-shell .content .arco-pagination-total { margin-right: auto; color: var(--ns-ink-faint); font-size: 10px; }
+.admin-shell .content .arco-pagination-item {
+  min-width: 32px;
+  height: 32px;
+  margin: 0;
+  border: 1px solid var(--ns-line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ns-ink-soft);
+  font-size: 11px;
+  line-height: 30px;
+}
+.admin-shell .content .arco-pagination-item:hover:not(.arco-pagination-item-disabled) {
+  border-color: #aeb8aa;
+  background: #eef1eb;
+  color: var(--ns-ink);
+}
+.admin-shell .content .arco-pagination-item-active,
+.admin-shell .content .arco-pagination-item-active:hover {
+  border-color: var(--ns-accent-strong) !important;
+  background: var(--ns-accent-strong) !important;
+  color: #fff !important;
+}
+.admin-shell .content .arco-pagination-item-disabled { background: #f4f5f1; color: #a9afa8; }
+.admin-shell .content .arco-pagination-item-previous,
+.admin-shell .content .arco-pagination-item-next { min-width: 48px; padding: 0 9px; }
 body .arco-tabs-nav-button { width: auto; min-width: 34px; padding: 0 5px; font-size: 0; }
 body .arco-tabs-nav-button-left::after,
 body .arco-tabs-nav-button-up::after { font-size: 10px; content: '前项'; }

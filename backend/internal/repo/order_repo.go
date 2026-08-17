@@ -13,6 +13,12 @@ import (
 
 type OrderRepository struct{ db *gorm.DB }
 
+type OrderStats struct {
+	PaidCount  int64   `json:"paid_count"`
+	PaidAmount float64 `json:"paid_amount"`
+	PaidPoints int64   `json:"paid_points"`
+}
+
 func NewOrderRepository(db *gorm.DB) *OrderRepository { return &OrderRepository{db: db} }
 
 func (r *OrderRepository) Create(ctx context.Context, o *model.Order) error {
@@ -84,6 +90,15 @@ func (r *OrderRepository) List(ctx context.Context, status, source, query string
 	}
 	err := q.Order("created_at desc").Limit(limit).Offset(offset).Find(&out).Error
 	return out, total, err
+}
+
+func (r *OrderRepository) Stats(ctx context.Context) (OrderStats, error) {
+	var stats OrderStats
+	err := r.db.WithContext(ctx).Model(&model.Order{}).
+		Select("COUNT(*) AS paid_count, COALESCE(SUM(amount), 0) AS paid_amount, COALESCE(SUM(points), 0) AS paid_points").
+		Where("status = ?", "paid").
+		Scan(&stats).Error
+	return stats, err
 }
 
 // MarkPaid flips a pending order to paid atomically. Returns true only on the

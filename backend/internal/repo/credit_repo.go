@@ -16,6 +16,13 @@ type CreditRepository struct {
 	db *gorm.DB
 }
 
+type CreditStats struct {
+	CapturedCount  int64   `json:"captured_count"`
+	CapturedAmount float64 `json:"captured_amount"`
+	RefundedCount  int64   `json:"refunded_count"`
+	RefundedAmount float64 `json:"refunded_amount"`
+}
+
 func NewCreditRepository(db *gorm.DB) *CreditRepository {
 	return &CreditRepository{db: db}
 }
@@ -193,4 +200,15 @@ func (r *CreditRepository) List(ctx context.Context, status, userID string, limi
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+func (r *CreditRepository) Stats(ctx context.Context) (CreditStats, error) {
+	var stats CreditStats
+	err := r.db.WithContext(ctx).Model(&model.CreditTransaction{}).
+		Select(`COUNT(*) FILTER (WHERE status = 'captured') AS captured_count,
+			COALESCE(SUM(amount) FILTER (WHERE status = 'captured'), 0) AS captured_amount,
+			COUNT(*) FILTER (WHERE status = 'refunded') AS refunded_count,
+			COALESCE(SUM(amount) FILTER (WHERE status = 'refunded'), 0) AS refunded_amount`).
+		Scan(&stats).Error
+	return stats, err
 }
