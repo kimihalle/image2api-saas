@@ -15,21 +15,20 @@ import (
 )
 
 type V1Handler struct {
-	v1       *service.V1Service
-	platform *service.APIPlatformService
+	v1          *service.V1Service
+	idempotency *service.IdempotencyService
 }
 
-func NewV1Handler(v1 *service.V1Service, platform *service.APIPlatformService) *V1Handler {
-	return &V1Handler{v1: v1, platform: platform}
+func NewV1Handler(v1 *service.V1Service, idempotency *service.IdempotencyService) *V1Handler {
+	return &V1Handler{v1: v1, idempotency: idempotency}
 }
 
 func (h *V1Handler) Models(c *gin.Context) {
-	principal, err := h.v1.Authenticate(c.Request.Context(), c.GetHeader("Authorization"))
+	_, err := h.v1.Authenticate(c.Request.Context(), c.GetHeader("Authorization"))
 	if err != nil {
 		h.writeAuthError(c, err)
 		return
 	}
-	markAPIPrincipal(c, principal)
 
 	items, err := h.v1.ListModels(c.Request.Context())
 	if err != nil {
@@ -51,7 +50,6 @@ func (h *V1Handler) ImageGenerations(c *gin.Context) {
 		h.writeAuthError(c, err)
 		return
 	}
-	markAPIPrincipal(c, principal)
 
 	var body struct {
 		Model          string `json:"model"`
@@ -68,7 +66,6 @@ func (h *V1Handler) ImageGenerations(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
 		return
 	}
-	c.Set("api_model", body.Model)
 	idem, stop := h.beginIdempotency(c, principal, body)
 	if stop {
 		return
@@ -87,7 +84,6 @@ func (h *V1Handler) ImageGenerations(c *gin.Context) {
 		return
 	}
 	out := openaiImageResponse(resp)
-	markAPICredits(c, resp)
 	h.completeIdempotency(c, idem, out)
 	c.JSON(http.StatusOK, out)
 }
@@ -101,7 +97,6 @@ func (h *V1Handler) ImageEdits(c *gin.Context) {
 		h.writeAuthError(c, err)
 		return
 	}
-	markAPIPrincipal(c, principal)
 	if !strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/form-data") {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "images/edits requires multipart/form-data"})
 		return
@@ -117,7 +112,6 @@ func (h *V1Handler) ImageEdits(c *gin.Context) {
 	}
 	n, _ := strconv.Atoi(strings.TrimSpace(c.PostForm("n")))
 	modelID := c.PostForm("model")
-	c.Set("api_model", modelID)
 	idem, stop := h.beginIdempotency(c, principal, map[string]any{"model": modelID, "prompt": c.PostForm("prompt"), "n": n, "size": c.PostForm("size"), "references": refs})
 	if stop {
 		return
@@ -136,7 +130,6 @@ func (h *V1Handler) ImageEdits(c *gin.Context) {
 		return
 	}
 	out := openaiImageResponse(resp)
-	markAPICredits(c, resp)
 	h.completeIdempotency(c, idem, out)
 	c.JSON(http.StatusOK, out)
 }
@@ -151,7 +144,6 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 		h.writeAuthError(c, err)
 		return
 	}
-	markAPIPrincipal(c, principal)
 	var modelID, prompt, seconds, size, referenceMode string
 	var refs []string
 	if strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/form-data") {
@@ -187,7 +179,6 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
 			return
 		}
-		c.Set("api_model", body.Model)
 		idem, stop := h.beginIdempotency(c, principal, body)
 		if stop {
 			return
@@ -224,7 +215,6 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 			h.writeV1Error(c, err, nil)
 			return
 		}
-		markAPICredits(c, resp)
 		h.completeIdempotency(c, idem, resp)
 		c.JSON(http.StatusOK, resp)
 		return
@@ -256,8 +246,6 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 		h.writeV1Error(c, err, nil)
 		return
 	}
-	c.Set("api_model", modelID)
-	markAPICredits(c, resp)
 	h.completeIdempotency(c, idem, resp)
 	c.JSON(http.StatusOK, resp)
 }
@@ -269,7 +257,6 @@ func (h *V1Handler) GetVideo(c *gin.Context) {
 		h.writeAuthError(c, err)
 		return
 	}
-	markAPIPrincipal(c, principal)
 	resp, err := h.v1.VideoJob(c.Request.Context(), principal, c.Param("id"))
 	if err != nil {
 		h.writeV1Error(c, err, nil)
@@ -286,7 +273,6 @@ func (h *V1Handler) GetVideoContent(c *gin.Context) {
 		h.writeAuthError(c, err)
 		return
 	}
-	markAPIPrincipal(c, principal)
 	body, contentType, err := h.v1.OpenVideoContent(c.Request.Context(), principal, c.Param("id"))
 	if err != nil {
 		h.writeV1Error(c, err, nil)
@@ -306,7 +292,6 @@ func (h *V1Handler) GetImageContent(c *gin.Context) {
 		h.writeAuthError(c, err)
 		return
 	}
-	markAPIPrincipal(c, principal)
 	body, contentType, err := h.v1.OpenImageContent(c.Request.Context(), principal, c.Param("id"))
 	if err != nil {
 		h.writeV1Error(c, err, nil)
@@ -409,33 +394,11 @@ func openaiImageResponse(m map[string]any) gin.H {
 	return out
 }
 
-func markAPIPrincipal(c *gin.Context, principal *service.APIPrincipal) {
-	if principal == nil || principal.User == nil {
-		return
-	}
-	c.Set("api_user_id", principal.User.ID)
-	c.Set("api_key_id", principal.APIKeyID)
-}
-
-func markAPICredits(c *gin.Context, response map[string]any) {
-	if response == nil {
-		return
-	}
-	switch value := response["charged"].(type) {
-	case float64:
-		c.Set("api_credits", value)
-	case float32:
-		c.Set("api_credits", float64(value))
-	case int:
-		c.Set("api_credits", float64(value))
-	}
-}
-
 func (h *V1Handler) beginIdempotency(c *gin.Context, principal *service.APIPrincipal, request any) (*service.IdempotencyResult, bool) {
-	if h.platform == nil || principal == nil || principal.User == nil {
+	if h.idempotency == nil || principal == nil || principal.User == nil {
 		return &service.IdempotencyResult{Created: true}, false
 	}
-	result, err := h.platform.BeginIdempotency(c.Request.Context(), principal.User.ID, c.GetHeader("Idempotency-Key"), request)
+	result, err := h.idempotency.Begin(c.Request.Context(), principal.User.ID, c.GetHeader("Idempotency-Key"), request)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return nil, true
@@ -460,14 +423,14 @@ func (h *V1Handler) beginIdempotency(c *gin.Context, principal *service.APIPrinc
 }
 
 func (h *V1Handler) abortIdempotency(c *gin.Context, result *service.IdempotencyResult) {
-	if h.platform != nil && result != nil {
-		h.platform.AbortIdempotency(c.Request.Context(), result.ID)
+	if h.idempotency != nil && result != nil {
+		h.idempotency.Abort(c.Request.Context(), result.ID)
 	}
 }
 
 func (h *V1Handler) completeIdempotency(c *gin.Context, result *service.IdempotencyResult, response any) {
-	if h.platform != nil && result != nil {
-		_ = h.platform.CompleteIdempotency(c.Request.Context(), result.ID, http.StatusOK, response)
+	if h.idempotency != nil && result != nil {
+		_ = h.idempotency.Complete(c.Request.Context(), result.ID, http.StatusOK, response)
 	}
 }
 

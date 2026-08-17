@@ -140,7 +140,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	}
 	concSvc := service.NewConcurrencyService(rdb)
 	generationEventsSvc := service.NewGenerationEventService(rdb)
-	apiPlatformSvc := service.NewAPIPlatformService(operationsRepo)
+	idempotencySvc := service.NewIdempotencyService(operationsRepo)
 	operationsSvc := service.NewOperationsService(operationsRepo, creditRepo, siteRepo)
 	cgroupSvc := service.NewConcurrencyGroupService(cgroupRepo, concSvc)
 	announcementSvc := service.NewAnnouncementService(siteRepo, userRepo)
@@ -172,7 +172,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	v1Svc := service.NewV1Service(cfg, modelRepo, userRepo, eventRepo, tokenRepo, siteRepo, cgroupRepo, concSvc, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, customClient, rustfsClient)
 	v1Svc.SetCredits(creditRepo)
 	v1Svc.SetSanbao(sanbaoClient)
-	v1Svc.SetReliabilityPlatform(generationEventsSvc, apiPlatformSvc)
+	v1Svc.SetGenerationEvents(generationEventsSvc)
 	v1Svc.ResumeSanbaoJobs(context.Background())
 	sanbaoSvc := service.NewSanbaoAdminService(sanbaoClient, tokenRepo, modelRepo, eventRepo)
 	siteSvc := service.NewSiteService(siteRepo, cfg.AppTitle)
@@ -191,13 +191,13 @@ func NewApp(ctx context.Context) (*App, error) {
 	v1Svc.SetBannedWords(bannedWordRepo)
 	userGenSvc := service.NewUserGenerationService(v1Svc, eventRepo, userRepo, modelRepo)
 	generationJobRepo := repo.NewGenerationJobRepository(db)
-	generationQueueSvc := service.NewGenerationQueueService(generationJobRepo, userRepo, modelRepo, userGenSvc, generationEventsSvc, apiPlatformSvc)
-	operationsHandler := handler.NewOperationsHandler(operationsSvc, backupSvc, apiPlatformSvc)
+	generationQueueSvc := service.NewGenerationQueueService(generationJobRepo, userRepo, modelRepo, userGenSvc, generationEventsSvc)
+	operationsHandler := handler.NewOperationsHandler(operationsSvc, backupSvc)
 
 	engine := router.New(cfg, authSvc, router.Handlers{
 		Health:        handler.NewHealthHandler(sqlDB, rdb, rustfsClient),
 		Images:        handler.NewImageHandler(cfg, imageAccessSvc, rustfsClient),
-		V1:            handler.NewV1Handler(v1Svc, apiPlatformSvc),
+		V1:            handler.NewV1Handler(v1Svc, idempotencySvc),
 		Site:          handler.NewSiteHandler(siteSvc),
 		Showcase:      handler.NewShowcaseHandler(showcaseSvc),
 		Auth:          handler.NewAuthHandler(cfg, authSvc, rateLimitSvc),
@@ -217,7 +217,6 @@ func NewApp(ctx context.Context) (*App, error) {
 		Sanbao:        handler.NewSanbaoHandler(sanbaoSvc, v1Svc),
 		Prompts:       handler.NewPromptHandler(promptSvc),
 		Operations:    operationsHandler,
-		APIPlatform:   apiPlatformSvc,
 	})
 
 	// Background self-healing sweep (quota recovery, cookie refresh, stale-pending
@@ -228,7 +227,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	go generationQueueSvc.Run(loopCtx, cfg.GenerationWorkers)
 	go operationsSvc.Run(loopCtx)
 	go backupSvc.Run(loopCtx)
-	go apiPlatformSvc.Run(loopCtx)
+	go idempotencySvc.Run(loopCtx)
 
 	return &App{
 		Config:            cfg,

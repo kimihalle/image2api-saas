@@ -409,11 +409,7 @@ func AutoMigrateModels() []any {
 		&ReconciliationRun{},
 		&ReconciliationIssue{},
 		&BackupRun{},
-		&APIUsageBucket{},
 		&IdempotencyRecord{},
-		&WebhookEndpoint{},
-		&WebhookDelivery{},
-		&WorkflowPreset{},
 		&StatCounter{},
 		&ConcurrencyGroup{},
 		&Order{},
@@ -480,22 +476,6 @@ type BackupRun struct {
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
-// APIUsageBucket stores hourly aggregates rather than one row per HTTP request.
-type APIUsageBucket struct {
-	ID             string    `gorm:"primaryKey;size:64" json:"id"`
-	BucketStart    time.Time `gorm:"index;not null" json:"bucket_start"`
-	UserID         string    `gorm:"size:32;index" json:"user_id,omitempty"`
-	APIKeyID       string    `gorm:"size:32;index" json:"api_key_id,omitempty"`
-	Path           string    `gorm:"size:128;index;not null" json:"path"`
-	Model          string    `gorm:"size:255;index" json:"model,omitempty"`
-	Requests       int64     `gorm:"not null;default:0" json:"requests"`
-	Errors         int64     `gorm:"not null;default:0" json:"errors"`
-	LatencyTotalMS int64     `gorm:"not null;default:0" json:"latency_total_ms"`
-	Credits        float64   `gorm:"type:numeric(20,4);not null;default:0" json:"credits"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
-
 type IdempotencyRecord struct {
 	ID          string         `gorm:"primaryKey;size:64" json:"id"`
 	UserID      string         `gorm:"size:32;index;not null" json:"user_id"`
@@ -507,59 +487,6 @@ type IdempotencyRecord struct {
 	ExpiresAt   time.Time      `gorm:"index;not null" json:"expires_at"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
-}
-
-type WebhookEndpoint struct {
-	ID           string         `gorm:"primaryKey;size:40" json:"id"`
-	UserID       string         `gorm:"size:32;index;not null" json:"user_id"`
-	Name         string         `gorm:"size:100;not null" json:"name"`
-	URL          string         `gorm:"size:500;not null" json:"url"`
-	Secret       string         `gorm:"size:255;not null" json:"-"`
-	SecretHint   string         `gorm:"size:32" json:"secret_hint"`
-	Events       datatypes.JSON `gorm:"type:jsonb" json:"events"`
-	Enabled      bool           `gorm:"not null;default:true;index" json:"enabled"`
-	LastStatus   int            `gorm:"not null;default:0" json:"last_status"`
-	LastError    string         `gorm:"type:text" json:"last_error,omitempty"`
-	LastCalledAt *time.Time     `json:"last_called_at,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-}
-
-type WebhookDelivery struct {
-	ID            string         `gorm:"primaryKey;size:40" json:"id"`
-	EndpointID    string         `gorm:"size:40;index;not null" json:"endpoint_id"`
-	UserID        string         `gorm:"size:32;index;not null" json:"user_id"`
-	EventType     string         `gorm:"size:64;index;not null" json:"event_type"`
-	EventID       string         `gorm:"size:64;index;not null" json:"event_id"`
-	Payload       datatypes.JSON `gorm:"type:jsonb;not null" json:"payload"`
-	Status        string         `gorm:"size:16;index;not null" json:"status"`
-	Attempts      int            `gorm:"not null;default:0" json:"attempts"`
-	HTTPStatus    int            `gorm:"not null;default:0" json:"http_status"`
-	ResponseBody  string         `gorm:"type:text" json:"response_body,omitempty"`
-	LastError     string         `gorm:"type:text" json:"last_error,omitempty"`
-	NextAttemptAt time.Time      `gorm:"index;not null" json:"next_attempt_at"`
-	DeliveredAt   *time.Time     `json:"delivered_at,omitempty"`
-	CreatedAt     time.Time      `gorm:"index" json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-}
-
-// WorkflowPreset is a reusable user-owned generation recipe. Public operator
-// recipes can be represented by OwnerID="" and Visibility="public".
-type WorkflowPreset struct {
-	ID          string            `gorm:"primaryKey;size:40" json:"id"`
-	OwnerID     string            `gorm:"size:32;index" json:"owner_id,omitempty"`
-	Name        string            `gorm:"size:120;not null" json:"name"`
-	Description string            `gorm:"size:500" json:"description"`
-	Kind        string            `gorm:"size:16;index;not null" json:"kind"`
-	ModelID     string            `gorm:"size:255;index" json:"model_id"`
-	Prompt      string            `gorm:"type:text;not null" json:"prompt"`
-	Variables   datatypes.JSON    `gorm:"type:jsonb" json:"variables"`
-	Defaults    datatypes.JSONMap `gorm:"type:jsonb" json:"defaults"`
-	Visibility  string            `gorm:"size:16;index;not null;default:'private'" json:"visibility"`
-	Enabled     bool              `gorm:"not null;default:true;index" json:"enabled"`
-	UseCount    int64             `gorm:"not null;default:0" json:"use_count"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // Order is a points-recharge order paid via 易支付 (epay). ID is our merchant

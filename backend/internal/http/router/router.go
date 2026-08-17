@@ -33,7 +33,6 @@ type Handlers struct {
 	Sanbao        *handler.SanbaoHandler
 	Prompts       *handler.PromptHandler
 	Operations    *handler.OperationsHandler
-	APIPlatform   *service.APIPlatformService
 }
 
 func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.Engine {
@@ -46,7 +45,6 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 	engine.Use(middleware.RequestID())
 	engine.Use(middleware.AccessLog())
 	engine.Use(middleware.RequestBodyLimit(50 << 20))
-	engine.Use(middleware.APIUsage(handlers.APIPlatform))
 	engine.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.CORSOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -123,18 +121,6 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		userAuthed.PUT("/prompts/:id/favorite", handlers.Prompts.Favorite)
 		userAuthed.POST("/prompts/:id/use", handlers.Prompts.Use)
 		userAuthed.POST("/pay/orders/:id/continue", handlers.Payment.ContinueOrder)
-		userAuthed.GET("/api-platform/usage", handlers.Operations.MyAPIUsage)
-		userAuthed.GET("/webhooks", handlers.Operations.WebhookEndpoints)
-		userAuthed.POST("/webhooks", handlers.Operations.CreateWebhook)
-		userAuthed.PUT("/webhooks/:id", handlers.Operations.UpdateWebhook)
-		userAuthed.DELETE("/webhooks/:id", handlers.Operations.DeleteWebhook)
-		userAuthed.POST("/webhooks/:id/test", handlers.Operations.TestWebhook)
-		userAuthed.GET("/webhook-deliveries", handlers.Operations.WebhookDeliveries)
-		userAuthed.GET("/workflows", handlers.Operations.Workflows)
-		userAuthed.POST("/workflows", handlers.Operations.CreateWorkflow)
-		userAuthed.PUT("/workflows/:id", handlers.Operations.UpdateWorkflow)
-		userAuthed.DELETE("/workflows/:id", handlers.Operations.DeleteWorkflow)
-		userAuthed.POST("/workflows/:id/render", handlers.Operations.RenderWorkflow)
 	}
 
 	authed := engine.Group("/admin/api")
@@ -153,7 +139,6 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		authed.POST("/operations/reconcile", handlers.Operations.RunReconciliation)
 		authed.GET("/operations/reconciliations/:id/issues", handlers.Operations.ReconciliationIssues)
 		authed.POST("/operations/backup", handlers.Operations.RunBackup)
-		authed.GET("/api-analytics", handlers.Operations.AdminAPIUsage)
 		authed.GET("/users", handlers.AdminRead.Users)
 		authed.GET("/invites", handlers.AdminRead.Invites)
 		authed.POST("/users", handlers.AdminWrite.CreateUser)

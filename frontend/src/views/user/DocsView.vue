@@ -177,7 +177,7 @@ onMounted(loadModels)
         <a-anchor-link href="#edits" title="图像编辑" />
         <a-anchor-link href="#videos" title="视频生成" />
         <a-anchor-link href="#responses" title="响应结构" />
-        <a-anchor-link href="#reliability" title="幂等与 Webhook" />
+        <a-anchor-link href="#reliability" title="幂等请求" />
         <a-anchor-link href="#errors" title="错误与重试" />
       </a-anchor>
     </aside>
@@ -240,11 +240,9 @@ onMounted(loadModels)
       </section>
 
       <section id="reliability">
-        <h3>幂等请求与 Webhook</h3>
+        <h3>幂等请求</h3>
         <p>所有生成 POST 接口支持 <code>Idempotency-Key</code>。同一用户、同一 Key、同一请求体只执行一次；Key 相同但参数不同会返回 409，避免网络重试造成重复生成和重复扣费。建议使用业务订单号或 UUID，并为每次新创作生成新 Key。</p>
         <pre class="light-code"><code>Idempotency-Key: your-unique-request-id</code></pre>
-        <p>在“开放平台”中可订阅生成成功、生成失败、死信和退款事件。系统使用 HMAC-SHA256 对 <code>时间戳 + "." + 原始请求体</code> 签名，失败投递会指数退避，最多尝试 8 次。</p>
-        <div class="error-table"><div><code>X-Webhook-Id</code><span>本次投递的唯一 ID，可用于接收方去重</span></div><div><code>X-Webhook-Timestamp</code><span>签名使用的 Unix 时间戳</span></div><div><code>X-Webhook-Signature</code><span>使用创建时显示的 whsec_ 密钥计算的十六进制 HMAC-SHA256</span></div></div>
       </section>
 
       <section id="errors">

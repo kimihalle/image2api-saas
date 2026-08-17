@@ -85,7 +85,6 @@ type V1Service struct {
 	sanbao   *sanbao.Client
 	store    *storage.Client
 	stream   *GenerationEventService
-	platform *APIPlatformService
 	// refresh re-mints an Adobe access token from its cookie when a request hits a
 	// 401 mid-flight (set via SetRefresh — wired after construction to avoid an
 	// init cycle). nil for deployments without cookie refresh.
@@ -267,11 +266,9 @@ func (s *V1Service) SetCredits(r *repo.CreditRepository) { s.credits = r }
 
 func (s *V1Service) SetSanbao(client *sanbao.Client) { s.sanbao = client }
 
-// SetReliabilityPlatform connects async video jobs to the same cross-instance
-// SSE and Webhook infrastructure used by queued image generations.
-func (s *V1Service) SetReliabilityPlatform(stream *GenerationEventService, platform *APIPlatformService) {
+// SetGenerationEvents connects async video jobs to the cross-instance SSE stream.
+func (s *V1Service) SetGenerationEvents(stream *GenerationEventService) {
 	s.stream = stream
-	s.platform = platform
 }
 
 // Inflight exposes the registry so the maintenance sweep can cancel a stuck
@@ -1128,21 +1125,10 @@ func (s *V1Service) notifyVideoTerminal(ctx context.Context, principal *APIPrinc
 	job["kind"] = "video"
 	job["charged"] = price
 	eventName := "job.completed"
-	webhookName := "generation.completed"
 	if status == "failed" {
 		eventName = "job.failed"
-		webhookName = "generation.failed"
 	}
 	s.publishVideoJob(ctx, principal, eventName, job)
-	if s.platform == nil || principal == nil || principal.User == nil {
-		return
-	}
-	s.platform.EmitWebhook(ctx, principal.User.ID, webhookName, eventID, job)
-	if status == "failed" {
-		s.platform.EmitWebhook(ctx, principal.User.ID, "billing.refunded", eventID, map[string]any{
-			"generation_id": eventID, "amount": price, "reason": message, "created_at": time.Now(),
-		})
-	}
 }
 
 func (s *V1Service) publishVideoJob(ctx context.Context, principal *APIPrincipal, eventName string, job map[string]any) {

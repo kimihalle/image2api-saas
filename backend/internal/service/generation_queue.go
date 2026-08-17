@@ -18,17 +18,16 @@ import (
 const maxQueuedJobsPerUser = 20
 
 type GenerationQueueService struct {
-	jobs     *repo.GenerationJobRepository
-	users    *repo.UserRepository
-	models   *repo.ModelRepository
-	gen      *UserGenerationService
-	events   *GenerationEventService
-	platform *APIPlatformService
-	wake     chan struct{}
+	jobs   *repo.GenerationJobRepository
+	users  *repo.UserRepository
+	models *repo.ModelRepository
+	gen    *UserGenerationService
+	events *GenerationEventService
+	wake   chan struct{}
 }
 
-func NewGenerationQueueService(jobs *repo.GenerationJobRepository, users *repo.UserRepository, models *repo.ModelRepository, gen *UserGenerationService, events *GenerationEventService, platform *APIPlatformService) *GenerationQueueService {
-	return &GenerationQueueService{jobs: jobs, users: users, models: models, gen: gen, events: events, platform: platform, wake: make(chan struct{}, 1)}
+func NewGenerationQueueService(jobs *repo.GenerationJobRepository, users *repo.UserRepository, models *repo.ModelRepository, gen *UserGenerationService, events *GenerationEventService) *GenerationQueueService {
+	return &GenerationQueueService{jobs: jobs, users: users, models: models, gen: gen, events: events, wake: make(chan struct{}, 1)}
 }
 
 func (s *GenerationQueueService) SubmitImages(ctx context.Context, user *model.User, in UserGenerateRequest, count int) ([]map[string]any, error) {
@@ -283,9 +282,6 @@ func (s *GenerationQueueService) process(ctx context.Context, item *model.Genera
 	now := time.Now()
 	item.FinishedAt = &now
 	s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.completed", "job": shapeGenerationJob(item, 0)})
-	if s.platform != nil {
-		s.platform.EmitWebhook(ctx, item.UserID, "generation.completed", item.ID, webhookJobPayload(item))
-	}
 }
 
 func (s *GenerationQueueService) handleFailure(ctx context.Context, item *model.GenerationJob, code string, retryable bool, message string) {
@@ -305,36 +301,12 @@ func (s *GenerationQueueService) handleFailure(ctx context.Context, item *model.
 		item.Status, item.Stage, item.Progress = "dead_letter", "dead_letter", 100
 		item.Error, item.LastError, item.ErrorCode, item.Retryable = message, message, code, false
 		s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.dead_letter", "job": shapeGenerationJob(item, 0)})
-		if s.platform != nil {
-			s.platform.EmitWebhook(ctx, item.UserID, "generation.dead_letter", item.ID, webhookJobPayload(item))
-			s.platform.EmitWebhook(ctx, item.UserID, "billing.refunded", item.ID, webhookRefundPayload(item))
-		}
 		return
 	}
 	_ = s.jobs.Fail(ctx, item.ID, message)
 	item.Status, item.Stage, item.Progress = "failed", "failed", 100
 	item.Error, item.ErrorCode = message, code
 	s.events.Publish(ctx, item.UserID, map[string]any{"event": "job.failed", "job": shapeGenerationJob(item, 0)})
-	if s.platform != nil {
-		s.platform.EmitWebhook(ctx, item.UserID, "generation.failed", item.ID, webhookJobPayload(item))
-		s.platform.EmitWebhook(ctx, item.UserID, "billing.refunded", item.ID, webhookRefundPayload(item))
-	}
-}
-
-func webhookJobPayload(item *model.GenerationJob) map[string]any {
-	return map[string]any{
-		"id": item.ID, "kind": item.Kind, "status": item.Status, "stage": item.Stage,
-		"error": emptyOrNil(item.Error), "error_code": emptyOrNil(item.ErrorCode),
-		"attempts": item.Attempts, "estimated_cost": item.EstimatedCost,
-		"created_at": item.CreatedAt, "finished_at": item.FinishedAt,
-	}
-}
-
-func webhookRefundPayload(item *model.GenerationJob) map[string]any {
-	return map[string]any{
-		"generation_id": item.ID, "amount": item.EstimatedCost,
-		"reason": emptyOrNil(item.Error), "created_at": time.Now(),
-	}
 }
 
 func (s *GenerationQueueService) DeadJobs(ctx context.Context, limit, offset int) ([]map[string]any, int64, error) {
