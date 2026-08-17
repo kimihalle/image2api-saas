@@ -15,6 +15,7 @@ import {
   IconUpload,
   IconVideoCamera,
 } from '@arco-design/web-vue/es/icon'
+import GenerationLoader from '../../components/GenerationLoader.vue'
 import { api, imageUrl } from '../../services/api'
 import { useAuthStore } from '../../stores/auth'
 
@@ -547,12 +548,7 @@ function thumb(item: any) {
                       <button type="button" title="删除当前结果" aria-label="删除当前结果" @click.stop="removeTask(turn, task)"><IconDelete /></button>
                     </div>
                     <video v-if="task.url" :src="task.url" controls playsinline preload="metadata" />
-                  <div v-else-if="isPending(task.status)" class="rendering">
-                    <span class="render-ring"><IconLoading /></span>
-                    <strong>{{ task.status === 'queued' ? '等待生成' : task.status === 'submitting' ? '正在提交' : '正在生成' }}</strong>
-                    <small>{{ task.progress > 0 ? `${task.progress}%` : `任务 ${String(index + 1).padStart(2, '0')}` }}</small>
-                    <div class="progress"><i :style="{ width: `${Math.max(6, task.progress)}%` }"></i></div>
-                  </div>
+                  <GenerationLoader v-else-if="isPending(task.status)" kind="video" :title="task.status === 'queued' ? '等待生成' : task.status === 'submitting' ? '正在提交' : '正在渲染视频'" :detail="task.progress > 0 ? `已完成 ${task.progress}%` : `正在编排镜头 · 任务 ${String(index + 1).padStart(2, '0')}`" :progress="task.progress" />
                   <div v-else-if="task.status === 'completed'" class="rendering unavailable">
                     <IconVideoCamera /><strong>视频已生成</strong><small>请前往生成记录查看文件</small>
                   </div>

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import { IconApps, IconCheck, IconCloseCircle, IconDelete, IconDownload, IconImage, IconLoading, IconMessage, IconPlus, IconThunderbolt as IconSend, IconUpload } from '@arco-design/web-vue/es/icon'
+import GenerationLoader from '../../components/GenerationLoader.vue'
 import MediaPreview from '../../components/MediaPreview.vue'
 import { api, imageUrl } from '../../services/api'
 import { useAuthStore } from '../../stores/auth'
@@ -486,7 +487,7 @@ function clearConversation() {
           <div class="output-summary"><div><strong>{{ loading ? '任务正在执行' : '本轮生成结果' }}</strong><span>{{ completedCount }} / {{ outputs.length }} 已处理</span></div><span v-if="loading" class="live-state"><i></i>生成中</span></div>
           <div class="output-grid" :class="{ single: outputs.length === 1 }">
             <article v-for="item in outputs" :key="item.id" class="output-card" :class="item.status">
-              <div v-if="item.status === 'queued' || item.status === 'running'" class="task-placeholder"><span class="task-spinner"><IconLoading /></span><strong>{{ item.status === 'queued' ? '等待执行' : '正在生成' }}</strong><small>{{ item.status === 'queued' && item.position ? `队列前方 ${Math.max(0, item.position - 1)} 个任务` : `任务 ${String(item.index + 1).padStart(2, '0')}` }}</small></div>
+              <GenerationLoader v-if="item.status === 'queued' || item.status === 'running'" kind="image" :title="item.status === 'queued' ? '等待执行' : '正在显影'" :detail="item.status === 'queued' && item.position ? `队列前方 ${Math.max(0, item.position - 1)} 个任务` : `正在构建画面 · 任务 ${String(item.index + 1).padStart(2, '0')}`" />
               <button v-else-if="item.status === 'success'" type="button" class="result-thumb" :aria-label="`预览生成结果 ${item.index + 1}`" @click="previewOutput = item">
                 <img :src="outputUrl(item)" :alt="`生成结果 ${item.index + 1}`" />
                 <span class="success-mark"><IconCheck /></span>
@@ -521,11 +522,7 @@ function clearConversation() {
               </div>
               <div class="chat-output-grid" :class="{ single: turn.tasks.length === 1 }">
                 <article v-for="item in turn.tasks" :key="item.id" class="chat-output" :class="item.status">
-                  <div v-if="item.status === 'queued' || item.status === 'running'" class="chat-task-state">
-                    <span class="task-spinner"><IconLoading /></span>
-                    <strong>{{ item.status === 'queued' ? '等待执行' : '正在生成' }}</strong>
-                    <small>{{ item.status === 'queued' && item.position ? `队列前方 ${Math.max(0, item.position - 1)} 个任务` : `任务 ${String(item.index + 1).padStart(2, '0')}` }}</small>
-                  </div>
+                  <GenerationLoader v-if="item.status === 'queued' || item.status === 'running'" kind="image" :title="item.status === 'queued' ? '等待执行' : '正在显影'" :detail="item.status === 'queued' && item.position ? `队列前方 ${Math.max(0, item.position - 1)} 个任务` : `正在构建画面 · 任务 ${String(item.index + 1).padStart(2, '0')}`" />
                   <div v-else-if="item.status === 'success'" class="chat-result-frame">
                     <button type="button" class="chat-result-thumb" :aria-label="`预览生成结果 ${item.index + 1}`" @click="previewOutput = item"><img :src="outputUrl(item)" :alt="`生成结果 ${item.index + 1}`" /></button>
                     <span class="chat-result-actions"><button type="button" title="下载图片" :aria-label="`下载生成结果 ${item.index + 1}`" @click="downloadImage(item, item.index)"><IconDownload /></button><button type="button" title="删除图片" :aria-label="`删除生成结果 ${item.index + 1}`" @click="removeImageTask(turn, item)"><IconDelete /></button></span>
