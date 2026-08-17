@@ -111,6 +111,12 @@ const pendingCount = computed(() => turns.value.flatMap((turn) => turn.tasks).fi
 let pollTimer: number | undefined
 let generationStream: EventSource | null = null
 
+async function scrollToConversationBottom(behavior: ScrollBehavior = 'auto') {
+  await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  composer.value?.scrollIntoView({ behavior, block: 'end' })
+}
+
 function applyStoredTemplate() {
   try {
     const raw = sessionStorage.getItem('creation_template_payload')
@@ -237,6 +243,7 @@ onMounted(async () => {
   applyStoredTemplate()
   connectGenerationStream()
   if (pendingCount.value) schedulePoll(800)
+  await scrollToConversationBottom()
 })
 
 onBeforeUnmount(() => {
@@ -427,7 +434,7 @@ async function create() {
     id: crypto.randomUUID(), status: 'submitting', progress: 0, cost: snapshot.cost,
     model: snapshot.modelName, ratio: snapshot.ratio, resolution: snapshot.resolution, duration: snapshot.duration,
   }))
-  composer.value?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  await scrollToConversationBottom('smooth')
   await Promise.all(turn.tasks.map(async (task) => {
     const response = await api('/video/jobs', {
       method: 'POST',
