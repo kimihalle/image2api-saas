@@ -68,6 +68,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 	publicAdmin := engine.Group("/admin/api")
 	{
 		publicAdmin.GET("/site", handlers.Site.Public)
+		publicAdmin.GET("/ticker", handlers.Announcement.Ticker)
 		publicAdmin.GET("/showcase", handlers.Showcase.List)
 		publicAdmin.GET("/stats", handlers.AdminRead.Stats)
 		publicAdmin.GET("/models", handlers.UserGen.Models)
@@ -245,6 +246,8 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 			settings.PUT("/media", handlers.AppSettings.MediaPut)
 			settings.GET("/announcement", handlers.Announcement.AdminGet)
 			settings.PUT("/announcement", handlers.Announcement.AdminPut)
+			settings.GET("/ticker", handlers.Announcement.AdminTickerGet)
+			settings.PUT("/ticker", handlers.Announcement.AdminTickerPut)
 			settings.GET("/pay", handlers.Payment.SettingsGet)
 			settings.PUT("/pay", handlers.Payment.SettingsSave)
 		}

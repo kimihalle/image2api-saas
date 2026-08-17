@@ -7,6 +7,7 @@ import {
   IconSettings, IconStorage, IconStop, IconThunderbolt, IconUserGroup, IconVideoCamera, IconBulb,
 } from '@arco-design/web-vue/es/icon'
 import BrandMark from '../components/BrandMark.vue'
+import AnnouncementTicker from '../components/AnnouncementTicker.vue'
 import PageErrorBoundary from '../components/PageErrorBoundary.vue'
 import { useAuthStore } from '../stores/auth'
 import { useSiteStore } from '../stores/site'
@@ -132,6 +133,7 @@ async function logout() {
           <a-button v-if="!auth.isAuthed" type="primary" shape="round" @click="primaryAction">登录</a-button>
         </div>
       </header>
+      <AnnouncementTicker v-if="!adminMode" />
       <section class="content"><PageErrorBoundary><router-view :key="route.fullPath" /></PageErrorBoundary></section>
     </main>
 

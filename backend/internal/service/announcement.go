@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 
 	"backend/internal/model"
@@ -17,6 +18,11 @@ import (
 type AnnouncementService struct {
 	settings *repo.SiteSettingRepository
 	users    *repo.UserRepository
+}
+
+type TickerConfig struct {
+	Enabled bool   `json:"enabled"`
+	Content string `json:"content"`
 }
 
 func NewAnnouncementService(settings *repo.SiteSettingRepository, users *repo.UserRepository) *AnnouncementService {
@@ -58,4 +64,36 @@ func (s *AnnouncementService) MarkSeen(ctx context.Context, userID, version stri
 // Save persists new announcement markdown (admin). An empty string clears it.
 func (s *AnnouncementService) Save(ctx context.Context, content string) error {
 	return s.settings.UpsertValue(ctx, "announcement.content", content)
+}
+
+func (s *AnnouncementService) Ticker(ctx context.Context) TickerConfig {
+	var config TickerConfig
+	raw, _ := s.settings.GetValue(ctx, "announcement.ticker")
+	_ = json.Unmarshal([]byte(raw), &config)
+	config.Content = strings.TrimSpace(config.Content)
+	if config.Content == "" {
+		config.Enabled = false
+	}
+	return config
+}
+
+// PublicTicker never exposes a disabled draft to unauthenticated visitors.
+func (s *AnnouncementService) PublicTicker(ctx context.Context) map[string]any {
+	config := s.Ticker(ctx)
+	if !config.Enabled {
+		return map[string]any{"enabled": false, "content": "", "version": ""}
+	}
+	return map[string]any{"enabled": true, "content": config.Content, "version": announcementVersion(config.Content)}
+}
+
+func (s *AnnouncementService) SaveTicker(ctx context.Context, config TickerConfig) error {
+	config.Content = strings.TrimSpace(config.Content)
+	if config.Content == "" {
+		config.Enabled = false
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return s.settings.UpsertValue(ctx, "announcement.ticker", string(encoded))
 }

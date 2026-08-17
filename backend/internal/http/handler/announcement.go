@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"backend/internal/service"
 	"github.com/gin-gonic/gin"
@@ -62,4 +64,30 @@ func (h *AnnouncementHandler) AdminPut(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *AnnouncementHandler) Ticker(c *gin.Context) {
+	c.JSON(http.StatusOK, h.svc.PublicTicker(c.Request.Context()))
+}
+
+func (h *AnnouncementHandler) AdminTickerGet(c *gin.Context) {
+	c.JSON(http.StatusOK, h.svc.Ticker(c.Request.Context()))
+}
+
+func (h *AnnouncementHandler) AdminTickerPut(c *gin.Context) {
+	var body service.TickerConfig
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
+		return
+	}
+	body.Content = strings.TrimSpace(body.Content)
+	if utf8.RuneCountInString(body.Content) > 500 {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "滚动公告最多 500 个字符"})
+		return
+	}
+	if err := h.svc.SaveTicker(c.Request.Context(), body); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to save"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "data": h.svc.Ticker(c.Request.Context())})
 }
