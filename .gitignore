@@ -1,0 +1,13 @@
+.env
+frontend/node_modules/
+frontend/dist/
+backend/api-linux
+backend/api-linux-*
+backend/bin/
+backend/data/
+qa-screens/*.png
+qa-screens/*.jpg
+frontend/qa-screens/
+qa-screens/reference-*/
+*.bak.*
+*.log

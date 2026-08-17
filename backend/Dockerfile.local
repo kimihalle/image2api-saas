@@ -1,0 +1,3 @@
+FROM image2api-saas-backend:latest
+COPY api-linux /app/api
+RUN chmod +x /app/api

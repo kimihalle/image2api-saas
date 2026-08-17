@@ -1,0 +1,407 @@
+// Package leonardo implements the Leonardo.ai (app.leonardo.ai) provider client.
+// Unlike chatgpt/runway (whose JWT IS the stored credential), Leonardo's durable
+// credential is the browser COOKIE (better-auth session): the bearer access token
+// it mints lives only ~1h. So every call here takes the cookie and derives a
+// fresh JWT on the fly via /api/auth/get-session — there is no long-lived token to
+// store or a separate refresh profile to maintain. tls-client gives a Chrome
+// JA3/JA4 fingerprint so the requests aren't flagged.
+package leonardo
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	http "github.com/bogdanfinn/fhttp"
+	tlsclient "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
+)
+
+const (
+	appBase       = "https://app.leonardo.ai"
+	graphqlURL    = "https://api.leonardo.ai/v1/graphql"
+	schemaVersion = "1.187.0"
+	userAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+)
+
+var (
+	ErrAuth              = errors.New("leonardo auth failed")
+	ErrQuotaExhausted    = errors.New("leonardo quota exhausted")
+	ErrTemporaryUpstream = errors.New("leonardo upstream temporary error")
+)
+
+type Client struct {
+	proxy string
+	// sessions caches the short-lived access token per cookie so we don't hit
+	// /api/auth/get-session on every call — Leonardo rate-limits that endpoint
+	// (429) hard, so re-using the ~1h JWT is essential.
+	mu       sync.Mutex
+	sessions map[string]*Session
+}
+
+func NewClient(proxy string) *Client {
+	return &Client{proxy: strings.TrimSpace(proxy), sessions: map[string]*Session{}}
+}
+
+func (c *Client) SetProxy(proxy string) {
+	c.proxy = strings.TrimSpace(proxy)
+}
+
+// IsLeonardoCookie reports whether a pasted credential is a Leonardo cookie: it
+// carries the better-auth session cookie name. This is what disambiguates it from
+// an Adobe cookie at import time.
+func IsLeonardoCookie(value string) bool {
+	return strings.Contains(value, "__Secure-better-auth.session_token") ||
+		strings.Contains(value, "better-auth.session_data")
+}
+
+// Session is the result of /api/auth/get-session: the short-lived bearer plus the
+// ids the GraphQL API needs (cognitoSub for the quota query, userId for the feed
+// and the CDN image path) and the human-facing account fields.
+type Session struct {
+	AccessToken string
+	CognitoSub  string
+	UserID      string
+	Email       string
+	Name        string
+	ExpiresAt   int64
+}
+
+// GetSession exchanges the cookie for a fresh access token + account ids. A 401/403
+// (or a response with no access token) means the cookie/session is dead → ErrAuth.
+func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error) {
+	cookie = strings.TrimSpace(cookie)
+	if cookie == "" {
+		return nil, ErrAuth
+	}
+	// Re-use a cached, still-valid access token (keep a 60s safety margin) instead
+	// of hitting the heavily rate-limited get-session endpoint again.
+	c.mu.Lock()
+	if cs, ok := c.sessions[cookie]; ok && cs.ExpiresAt-60 > time.Now().Unix() {
+		c.mu.Unlock()
+		return cs, nil
+	}
+	c.mu.Unlock()
+
+	client, err := c.newDirectTLSClient()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodGet, appBase+"/api/auth/get-session", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	req.Header = http.Header{
+		"accept":          {"*/*"},
+		"accept-language": {"en-US,en;q=0.9"},
+		"cookie":          {cookie},
+		"origin":          {appBase},
+		"referer":         {appBase + "/"},
+		"user-agent":      {userAgent},
+		"sec-fetch-dest":  {"empty"},
+		"sec-fetch-mode":  {"cors"},
+		"sec-fetch-site":  {"same-origin"},
+		http.HeaderOrderKey: {
+			"accept", "accept-language", "cookie", "origin", "referer",
+			"user-agent", "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrTemporaryUpstream, err.Error())
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return nil, ErrAuth
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("%w: get-session http %d: %s", ErrTemporaryUpstream, resp.StatusCode, clip(body, 160))
+	}
+	var raw struct {
+		Session struct {
+			AccessToken  string `json:"accessToken"`
+			CognitoSub   string `json:"cognitoSub"`
+			UserID       string `json:"userId"`
+			HasuraUserID string `json:"hasuraUserId"`
+			TokenExpiry  int64  `json:"accessTokenExpiry"`
+		} `json:"session"`
+		User struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+			Name  string `json:"name"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("%w: get-session non-json", ErrTemporaryUpstream)
+	}
+	if strings.TrimSpace(raw.Session.AccessToken) == "" {
+		// No bearer despite 200 → the cookie no longer authenticates.
+		return nil, ErrAuth
+	}
+	uid := raw.Session.UserID
+	if uid == "" {
+		uid = raw.Session.HasuraUserID
+	}
+	if uid == "" {
+		uid = raw.User.ID
+	}
+	sess := &Session{
+		AccessToken: raw.Session.AccessToken,
+		CognitoSub:  raw.Session.CognitoSub,
+		UserID:      uid,
+		Email:       strings.TrimSpace(raw.User.Email),
+		Name:        strings.TrimSpace(raw.User.Name),
+		ExpiresAt:   raw.Session.TokenExpiry,
+	}
+	if sess.ExpiresAt > time.Now().Unix() {
+		c.mu.Lock()
+		c.sessions[cookie] = sess
+		c.mu.Unlock()
+	}
+	return sess, nil
+}
+
+const qGetTokens = `query GetUserTokensFromSub($sub: String) {
+  user_details(where: {cognitoId: {_eq: $sub}}) {
+    id
+    plan
+    subscriptionTokens
+    paidTokens
+    rolloverTokens
+    tokenRenewalDate
+    __typename
+  }
+}`
+
+// FetchCreditsBalance derives a JWT from the cookie then reads the account's image
+// token balance. Returns a normalized map mirroring the other providers so the
+// TokenService quota plumbing is uniform. remaining = subscription+paid+rollover
+// (the spendable image tokens); available_until carries the daily renewal time so
+// the maintenance sweep can auto-recover a 限额 account.
+func (c *Client) FetchCreditsBalance(ctx context.Context, cookie string) (map[string]any, error) {
+	sess, err := c.GetSession(ctx, cookie)
+	if err != nil {
+		if errors.Is(err, ErrAuth) {
+			return nil, ErrAuth
+		}
+		return unknownBalance(err.Error()), nil
+	}
+	if sess.CognitoSub == "" {
+		return unknownBalance("no cognitoSub"), nil
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"operationName": "GetUserTokensFromSub",
+		"variables":     map[string]any{"sub": sess.CognitoSub},
+		"query":         qGetTokens,
+	})
+	body, status, err := c.graphqlP(ctx, sess.AccessToken, payload, false)
+	if err != nil {
+		return unknownBalance("network: " + err.Error()), nil
+	}
+	if status == 401 || status == 403 {
+		return nil, ErrAuth
+	}
+	if status != 200 {
+		return unknownBalance(fmt.Sprintf("http %d: %s", status, clip(body, 160))), nil
+	}
+	var result struct {
+		Data struct {
+			UserDetails []struct {
+				Plan               string `json:"plan"`
+				SubscriptionTokens int    `json:"subscriptionTokens"`
+				PaidTokens         int    `json:"paidTokens"`
+				RolloverTokens     int    `json:"rolloverTokens"`
+				TokenRenewalDate   string `json:"tokenRenewalDate"`
+			} `json:"user_details"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return unknownBalance("non-json"), nil
+	}
+	if len(result.Data.UserDetails) == 0 {
+		return unknownBalance("no user_details"), nil
+	}
+	ud := result.Data.UserDetails[0]
+	remaining := ud.SubscriptionTokens + ud.PaidTokens + ud.RolloverTokens
+	return map[string]any{
+		"remaining":       remaining,
+		"used":            nil,
+		"total":           nil,
+		"unknown":         false,
+		"error":           nil,
+		"plan":            ud.Plan,
+		"available_until": strings.TrimSpace(ud.TokenRenewalDate),
+		"email":           emptyStringNil(sess.Email),
+		"display_name":    emptyStringNil(sess.Name),
+		"user_id":         emptyStringNil(sess.UserID),
+	}, nil
+}
+
+// graphql runs a GraphQL call through the proxy. graphqlP lets callers pick the
+// egress: only the generate submit uses the proxy; reference-image upload and
+// polling run direct (local IP).
+func (c *Client) graphql(ctx context.Context, accessToken string, payload []byte) ([]byte, int, error) {
+	return c.graphqlP(ctx, accessToken, payload, true)
+}
+
+func (c *Client) graphqlP(ctx context.Context, accessToken string, payload []byte, useProxy bool) ([]byte, int, error) {
+	client, err := c.newTLSClientP(useProxy)
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequest(http.MethodPost, graphqlURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, 0, err
+	}
+	req = req.WithContext(ctx)
+	req.Header = http.Header{
+		"content-type":         {"application/json"},
+		"accept":               {"*/*"},
+		"accept-language":      {"en-US,en;q=0.9"},
+		"origin":               {appBase},
+		"referer":              {appBase + "/"},
+		"user-agent":           {userAgent},
+		"authorization":        {"Bearer " + accessToken},
+		"x-leo-schema-version": {schemaVersion},
+		"sec-fetch-dest":       {"empty"},
+		"sec-fetch-mode":       {"cors"},
+		"sec-fetch-site":       {"same-site"},
+		http.HeaderOrderKey: {
+			"content-type", "accept", "accept-language", "origin", "referer",
+			"user-agent", "authorization", "x-leo-schema-version",
+			"sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+func unknownBalance(reason string) map[string]any {
+	return map[string]any{
+		"remaining": nil,
+		"used":      nil,
+		"total":     nil,
+		"unknown":   true,
+		"error":     reason,
+	}
+}
+
+func (c *Client) newTLSClient() (tlsclient.HttpClient, error) { return c.newTLSClientP(true) }
+
+// newDirectTLSClient egresses on the local IP (never the proxy). Used for
+// reference-image upload, polling and result download.
+func (c *Client) newDirectTLSClient() (tlsclient.HttpClient, error) { return c.newTLSClientP(false) }
+
+func (c *Client) newTLSClientP(useProxy bool) (tlsclient.HttpClient, error) {
+	// Match the fingerprint proven to work against Leonardo's Cloudflare edge:
+	// Chrome_120, fixed extension order. A randomized JA3 (Chrome_133 +
+	// WithRandomTLSExtensionOrder) gets flagged and 429'd at get-session.
+	options := []tlsclient.HttpClientOption{
+		tlsclient.WithTimeoutSeconds(60),
+		tlsclient.WithClientProfile(profiles.Chrome_120),
+	}
+	if useProxy && c.proxy != "" {
+		options = append(options, tlsclient.WithProxyUrl(c.proxy))
+	}
+	return tlsclient.NewHttpClient(tlsclient.NewNoopLogger(), options...)
+}
+
+// downloadImage fetches a generated image (cdn.leonardo.ai) and returns the bytes.
+func (c *Client) downloadImage(ctx context.Context, imageURL string) ([]byte, error) {
+	if _, err := url.Parse(imageURL); err != nil {
+		return nil, err
+	}
+	client, err := c.newDirectTLSClient()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodGet, imageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	req.Header = http.Header{
+		"accept":     {"image/avif,image/webp,image/png,image/*,*/*;q=0.8"},
+		"user-agent": {userAgent},
+		"referer":    {appBase + "/"},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("%w: image download http %d", ErrTemporaryUpstream, resp.StatusCode)
+	}
+	return body, nil
+}
+
+func stringValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case nil:
+		return ""
+	default:
+		b, _ := json.Marshal(x)
+		return strings.TrimSpace(string(b))
+	}
+}
+
+func intValue(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case json.Number:
+		n, _ := x.Int64()
+		return int(n)
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(x))
+		return n
+	default:
+		return 0
+	}
+}
+
+func emptyStringNil(v string) any {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+func clip(b []byte, n int) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}

@@ -1,0 +1,8 @@
+# Keep secrets, local data and build artifacts out of the Docker build context.
+.env
+.env.*
+bin/
+data/
+*.log
+api-linux*
+!api-linux

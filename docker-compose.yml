@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-northstar}
+      POSTGRES_USER: ${POSTGRES_USER:-northstar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-northstar-local-only}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-northstar} -d ${POSTGRES_DB:-northstar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-northstar-local}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-northstar-local-secret}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_VOLUMES: /data
+    volumes: [rustfsdata:/data]
+    restart: unless-stopped
+
+  createbucket:
+    image: minio/mc:latest
+    depends_on: [rustfs]
+    entrypoint: >
+      /bin/sh -c "until mc alias set s3 http://rustfs:9000 ${RUSTFS_ACCESS_KEY:-northstar-local} ${RUSTFS_SECRET_KEY:-northstar-local-secret}; do sleep 2; done;
+      mc mb -p s3/northstar || true"
+    restart: "no"
+
+  backend:
+    build: ./backend
+    environment:
+      APP_ENV: production
+      APP_TITLE: ${APP_TITLE:-Northstar}
+      HTTP_ADDR: 0.0.0.0:6666
+      POSTGRES_DSN: host=postgres user=${POSTGRES_USER:-northstar} password=${POSTGRES_PASSWORD:-northstar-local-only} dbname=${POSTGRES_DB:-northstar} port=5432 sslmode=disable TimeZone=Asia/Shanghai
+      REDIS_ADDR: redis:6379
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_BUCKET: northstar
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-northstar-local}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-northstar-local-secret}
+      CORS_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost:2100,http://127.0.0.1:2100}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      GENERATION_WORKERS: ${GENERATION_WORKERS:-32}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      createbucket: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports: ["127.0.0.1:${WEB_PORT:-2100}:2000"]
+    depends_on: [backend]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  rustfsdata:

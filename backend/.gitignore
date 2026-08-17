@@ -1,0 +1,9 @@
+.gocache/
+.gomodcache/
+backend.exe
+*.exe
+*.out
+*.test
+.env
+backend.out.log
+backend.err.log

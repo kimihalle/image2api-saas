@@ -1,0 +1,4 @@
+Preview images are bundled for inspiration-library thumbnails and are not hotlinked at runtime.
+Prompt and example-media source: https://github.com/YouMind-OpenLab/ai-image-prompts-skill
+Per-file source URLs and upstream IDs are recorded in manifest.json and catalog-manifest.json.
+Repository license: MIT. Keep this notice and the source manifests when redistributing the bundle.

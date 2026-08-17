@@ -1,0 +1,180 @@
+:root {
+  --ns-bg: #f7f7f3;
+  --ns-surface: #ffffff;
+  --ns-surface-muted: #f0f1ed;
+  --ns-line: #dedfd8;
+  --ns-line-strong: #c8c9c1;
+  --ns-ink: #1f2421;
+  --ns-ink-soft: #626961;
+  --ns-ink-faint: #8c938c;
+  --ns-accent: #65735d;
+  --ns-accent-strong: #4d5d48;
+  --ns-accent-soft: #e6ece0;
+  --ns-warn: #a46b2c;
+  --ns-warn-soft: #f5eadc;
+  --ns-danger: #a54b3f;
+  --ns-danger-soft: #f6e5e1;
+  --ns-radius: 7px;
+  --ns-shadow: 0 1px 2px rgba(31, 36, 33, .04), 0 12px 32px rgba(31, 36, 33, .035);
+  color: var(--ns-ink);
+  background: var(--ns-bg);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: var(--ns-bg); }
+button, input, textarea, select { font: inherit; }
+body .arco-btn-primary:not(.arco-btn-disabled) { background-color: var(--ns-accent-strong) !important; border-color: var(--ns-accent-strong) !important; }
+body .arco-btn-primary:not(.arco-btn-disabled):hover { background-color: #3f4f3a !important; border-color: #3f4f3a !important; }
+body .arco-btn-primary.arco-btn-disabled { background-color: #d9ded6 !important; border-color: #d9ded6 !important; color: #7f887c !important; }
+body .arco-btn-outline:not(.arco-btn-status-danger) { color: var(--ns-accent-strong); border-color: var(--ns-accent); }
+body .arco-btn-outline:not(.arco-btn-status-danger):hover { color: #3f4f3a; border-color: #3f4f3a; background: var(--ns-accent-soft); }
+body .arco-btn-shape-round { padding-left: 18px; padding-right: 18px; }
+
+/* User-facing command buttons share the same quiet capsule language used by
+   the image and video composers. Selection controls and media thumbnails keep
+   their purpose-built shapes. */
+.shell:not(.admin-shell) .content .arco-btn:not(.arco-btn-circle, .arco-btn-shape-circle),
+.shell:not(.admin-shell) .top-actions .arco-btn:not(.arco-btn-circle, .arco-btn-shape-circle),
+.user-dialog .arco-btn:not(.arco-btn-circle, .arco-btn-shape-circle),
+.mode-chooser-modal .arco-btn:not(.arco-btn-circle, .arco-btn-shape-circle),
+.prompt-detail-modal .arco-btn:not(.arco-btn-circle, .arco-btn-shape-circle) {
+  height: 34px;
+  padding: 0 15px;
+  border-color: #d8ddd5;
+  border-radius: 999px !important;
+  background: #f3f5f0;
+  color: var(--ns-ink-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 650;
+  box-shadow: none;
+}
+.shell:not(.admin-shell) .content .arco-btn:not(.arco-btn-primary, .arco-btn-status-danger, .arco-btn-disabled):hover,
+.shell:not(.admin-shell) .top-actions .arco-btn:not(.arco-btn-primary, .arco-btn-status-danger, .arco-btn-disabled):hover,
+.user-dialog .arco-btn:not(.arco-btn-primary, .arco-btn-status-danger, .arco-btn-disabled):hover,
+.mode-chooser-modal .arco-btn:not(.arco-btn-primary, .arco-btn-status-danger, .arco-btn-disabled):hover,
+.prompt-detail-modal .arco-btn:not(.arco-btn-primary, .arco-btn-status-danger, .arco-btn-disabled):hover {
+  border-color: #bcc5b8;
+  background: #e9ede6;
+  color: var(--ns-ink);
+}
+.shell:not(.admin-shell) .content .arco-btn-primary:not(.arco-btn-disabled),
+.shell:not(.admin-shell) .top-actions .arco-btn-primary:not(.arco-btn-disabled),
+.user-dialog .arco-btn-primary:not(.arco-btn-disabled),
+.mode-chooser-modal .arco-btn-primary:not(.arco-btn-disabled),
+.prompt-detail-modal .arco-btn-primary:not(.arco-btn-disabled) {
+  border-color: #273129 !important;
+  background: #273129 !important;
+  color: #fff !important;
+}
+.shell:not(.admin-shell) .content .arco-btn-primary:not(.arco-btn-disabled):hover,
+.shell:not(.admin-shell) .top-actions .arco-btn-primary:not(.arco-btn-disabled):hover,
+.user-dialog .arco-btn-primary:not(.arco-btn-disabled):hover,
+.mode-chooser-modal .arco-btn-primary:not(.arco-btn-disabled):hover,
+.prompt-detail-modal .arco-btn-primary:not(.arco-btn-disabled):hover {
+  border-color: #354139 !important;
+  background: #354139 !important;
+}
+.shell:not(.admin-shell) .content .arco-btn-status-danger:not(.arco-btn-disabled),
+.user-dialog .arco-btn-status-danger:not(.arco-btn-disabled) {
+  border-color: #ead2cc;
+  background: #f7ece8;
+  color: #96594d;
+}
+.shell:not(.admin-shell) .content .arco-btn-size-mini,
+.user-dialog .arco-btn-size-mini { height: 28px; padding-inline: 11px; font-size: 9px; }
+.shell:not(.admin-shell) .content .arco-btn-size-small,
+.user-dialog .arco-btn-size-small { height: 31px; padding-inline: 12px; font-size: 10px; }
+.shell:not(.admin-shell) .content .arco-btn-size-large,
+.user-dialog .arco-btn-size-large,
+.mode-chooser-modal .arco-btn-size-large,
+.prompt-detail-modal .arco-btn-size-large { height: 38px; padding-inline: 18px; font-size: 11px; }
+.shell:not(.admin-shell) .content .frontend-icon-button.arco-btn,
+.user-dialog .frontend-icon-button.arco-btn { width: 34px; min-width: 34px; padding: 0; border-radius: 50% !important; }
+
+/* Admin command buttons use one compact capsule system. Icon-only circles,
+   segmented filters and media controls retain their own interaction shape. */
+.admin-shell .content .arco-btn:not(.arco-btn-circle, .arco-btn-shape-circle) {
+  height: 34px;
+  padding: 0 15px;
+  border-color: #d8ddd5;
+  border-radius: 999px !important;
+  background: #f3f5f0;
+  color: var(--ns-ink-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 650;
+  box-shadow: none;
+}
+.admin-shell .content .arco-btn:not(.arco-btn-primary, .arco-btn-status-danger, .arco-btn-disabled):hover {
+  border-color: #b9c3b5;
+  background: #e9ede6;
+  color: var(--ns-ink);
+}
+.admin-shell .content .arco-btn-primary:not(.arco-btn-disabled) {
+  border-color: #273129 !important;
+  background: #273129 !important;
+  color: #fff !important;
+}
+.admin-shell .content .arco-btn-status-danger:not(.arco-btn-disabled) {
+  border-color: #ead2cc;
+  background: #f7ece8;
+  color: #96594d;
+}
+.admin-shell .content .arco-btn-size-mini { height: 28px; padding-inline: 11px; font-size: 9px; }
+.admin-shell .content .arco-btn-size-small { height: 31px; padding-inline: 12px; font-size: 10px; }
+.admin-shell .content .arco-btn-size-large { height: 38px; padding-inline: 18px; font-size: 11px; }
+.arco-modal-footer .arco-btn:not(.arco-btn-circle, .arco-btn-shape-circle) {
+  min-height: 34px;
+  padding-inline: 15px;
+  border-radius: 999px !important;
+  font-size: 11px;
+  font-weight: 650;
+}
+body .arco-link { color: var(--ns-accent-strong) !important; }
+body .arco-tabs-tab-active, body .arco-tabs-tab:hover { color: var(--ns-accent-strong); }
+body .arco-tabs-nav-ink { background-color: var(--ns-accent-strong); }
+body .arco-checkbox-checked .arco-checkbox-icon { background-color: var(--ns-accent-strong); border-color: var(--ns-accent-strong); }
+body .arco-radio-button.arco-radio-checked { color: var(--ns-accent-strong); background-color: var(--ns-accent-soft); }
+body .arco-switch-checked { background-color: var(--ns-accent-strong); }
+.arco-card { border-color: var(--ns-line); border-radius: var(--ns-radius); box-shadow: var(--ns-shadow); }
+.arco-table-th { background: var(--ns-surface-muted); color: var(--ns-ink-soft); }
+.arco-table-td { border-color: var(--ns-line); }
+.arco-menu-light { background: transparent; }
+.arco-menu-light .arco-menu-item.arco-menu-selected { color: var(--ns-accent-strong); background: var(--ns-accent-soft); }
+.arco-menu-light .arco-menu-item:hover { background: #eceee8; }
+.arco-input-wrapper, .arco-textarea-wrapper, .arco-select-view { border-color: var(--ns-line-strong); background: #fff; }
+.arco-input-wrapper:focus-within, .arco-textarea-wrapper:focus-within, .arco-select-view-focus { border-color: var(--ns-accent); box-shadow: 0 0 0 2px rgba(101,115,93,.14); }
+.arco-tag { border-radius: 4px; }
+
+/* The product deliberately avoids directional-arrow controls. Selects stay
+   fully clickable; numeric fields use direct entry; pagers use text labels. */
+body .arco-select-view-arrow-icon,
+body .arco-input-number-step,
+body .arco-pagination-item-previous > svg,
+body .arco-pagination-item-next > svg,
+body .arco-tabs-nav-button > svg { display: none !important; }
+body .arco-pagination-item-previous,
+body .arco-pagination-item-next { width: auto; min-width: 44px; padding: 0 8px; }
+body .arco-pagination-item-previous::after,
+body .arco-pagination-item-next::after { font-size: 11px; line-height: 1; content: '上页'; }
+body .arco-pagination-item-next::after { content: '下页'; }
+body .arco-tabs-nav-button { width: auto; min-width: 34px; padding: 0 5px; font-size: 0; }
+body .arco-tabs-nav-button-left::after,
+body .arco-tabs-nav-button-up::after { font-size: 10px; content: '前项'; }
+body .arco-tabs-nav-button-right::after,
+body .arco-tabs-nav-button-down::after { font-size: 10px; content: '后项'; }
+.section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+.section-heading h2 { margin: 0; font-size: 20px; letter-spacing: 0; }
+.section-heading p { margin: 5px 0 0; color: var(--ns-ink-soft); font-size: 13px; }
+.page-width { width: min(1320px, calc(100vw - 64px)); margin: 0 auto; }
+@media (max-width: 760px) { .page-width { width: min(100% - 32px, 1320px); } }
