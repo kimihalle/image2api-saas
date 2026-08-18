@@ -37,6 +37,8 @@ backend at `http://127.0.0.1:6666` by default.
 
 ## Full stack
 
+宝塔面板 + Docker 的完整生产部署步骤见 [docs/DEPLOYMENT_BAOTA.md](docs/DEPLOYMENT_BAOTA.md)。
+
 Copy `.env.example` to `.env`, replace every production secret and origin, then:
 
 ```bash
